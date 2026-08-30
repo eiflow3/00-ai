@@ -9,10 +9,23 @@ from typing import Any
 from fastapi import FastAPI
 
 from app.docs.chat import CHAT_COMPONENT_SCHEMAS, CHAT_DESCRIPTION, CHAT_RESPONSES
+from app.docs.sources import (
+    DEINDEX_DESCRIPTION,
+    GET_SOURCE_DESCRIPTION,
+    GET_SOURCE_RESPONSES,
+    INDEX_SOURCES_DESCRIPTION,
+    INDEX_SOURCES_RESPONSES,
+    LIST_SOURCES_DESCRIPTION,
+    SOURCES_COMPONENT_SCHEMAS,
+    SOURCES_TAG,
+)
 
 # Schemas referenced by hand-written response docs. FastAPI never sees these on
 # a route signature, so without this they resolve to nothing in the docs UI.
-_EXTRA_COMPONENT_SCHEMAS: dict[str, Any] = {**CHAT_COMPONENT_SCHEMAS}
+_EXTRA_COMPONENT_SCHEMAS: dict[str, Any] = {
+    **CHAT_COMPONENT_SCHEMAS,
+    **SOURCES_COMPONENT_SCHEMAS,
+}
 
 
 def register_openapi_components(app: FastAPI) -> None:
@@ -37,5 +50,12 @@ def register_openapi_components(app: FastAPI) -> None:
 __all__ = [
     "CHAT_DESCRIPTION",
     "CHAT_RESPONSES",
+    "DEINDEX_DESCRIPTION",
+    "GET_SOURCE_DESCRIPTION",
+    "GET_SOURCE_RESPONSES",
+    "INDEX_SOURCES_DESCRIPTION",
+    "INDEX_SOURCES_RESPONSES",
+    "LIST_SOURCES_DESCRIPTION",
+    "SOURCES_TAG",
     "register_openapi_components",
 ]
