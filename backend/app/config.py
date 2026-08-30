@@ -27,6 +27,42 @@ class Settings(BaseSettings):
     # re-index.  Kept here (not in .env) so that change is visible in a diff.
     embedding_model: str = "text-embedding-3-small"
 
+    # Cloudflare R2 (S3-compatible) — the source-of-truth store for the files
+    # we embed.  Credentials come straight from env, like the other providers.
+    # Account-scoped, not R2-specific — Workers, D1 and KV share this value.
+    cloudflare_account_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "CLOUDFLARE_ACCOUNT_ID", "R2_ACCOUNT_ID", "cloudflare_account_id"
+        ),
+    )
+    r2_access_key_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("R2_ACCESS_KEY_ID", "r2_access_key_id"),
+    )
+    r2_secret_access_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("R2_SECRET_ACCESS_KEY", "r2_secret_access_key"),
+    )
+    r2_bucket: str = Field(
+        default="00-ai",
+        validation_alias=AliasChoices("R2_BUCKET", "r2_bucket"),
+    )
+
+    @property
+    def r2_endpoint_url(self) -> str:
+        """S3-compatible endpoint for this account's R2 storage."""
+        return f"https://{self.cloudflare_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def r2_configured(self) -> bool:
+        """Whether enough credentials are present to talk to R2."""
+        return bool(
+            self.cloudflare_account_id
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+        )
+
     # Anthropic (Claude) — same AliasChoices pattern to read ANTHROPIC_API_KEY
     # directly from env, bypassing the APP_ prefix.
     anthropic_api_key: str = Field(

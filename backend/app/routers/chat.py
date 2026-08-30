@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from app.docs.chat import CHAT_DESCRIPTION, CHAT_RESPONSES
 from app.schemas.chat import (
     ChatRequest,
     ChatStreamErrorEvent,
@@ -57,29 +58,10 @@ def _sse(event: ChatStreamRetrievalEvent | ChatStreamErrorEvent | ChatStreamUsag
 
 @router.post(
     "/chat",
-    responses={
-        200: {
-            "description": "Server-Sent Events (SSE) stream containing retrieval results and the LLM response.",
-            "content": {
-                "text/event-stream": {
-                    "schema": {
-                        "type": "string",
-                        "example": (
-                            "event: retrieval\ndata: {\"query\": \"...\", \"chunks\": [{\"chunk_id\": \"c1\", \"score\": 0.87, ...}]}\n\n"
-                            "data: Hello\n\ndata:  world\n\n"
-                            "event: usage\ndata: {\"input_tokens\": 10, ...}\n\n"
-                        )
-                    },
-                    "description": (
-                        "A leading `event: retrieval` with the matched chunks and their similarity "
-                        "scores, then text chunks (`data: <text>`), then a final `event: usage` "
-                        "with token counts and cost. A non-fatal `event: error` may precede the "
-                        "retrieval event if that stage failed."
-                    )
-                }
-            }
-        }
-    }
+    summary="Stream a retrieval-grounded chat response",
+    response_description="SSE stream of retrieval results followed by the generated answer.",
+    description=CHAT_DESCRIPTION,
+    responses=CHAT_RESPONSES,
 )
 async def chat(body: ChatRequest):
     """Retrieve relevant context, then stream a grounded chat response.

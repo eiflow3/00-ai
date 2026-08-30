@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.docs import register_openapi_components
 from app.schemas import EchoRequest, EchoResponse, HealthResponse
 from app.routers.chat import router as chat_router
 
@@ -12,6 +13,9 @@ app = FastAPI(title=settings.app_name)
 
 # Include routers for modular endpoint registration.
 app.include_router(chat_router)
+
+# Register schemas for streamed events, which FastAPI can't infer from routes.
+register_openapi_components(app)
 
 app.add_middleware(
     CORSMiddleware,

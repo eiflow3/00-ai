@@ -12,6 +12,7 @@ dependencies = [
     "openai>=3.6.0",
     "anthropic>=1.2.0",
     "sse-starlette>=3.4.8",
+    "boto3>=1.35",
 ]
 
 [tool.uv]
