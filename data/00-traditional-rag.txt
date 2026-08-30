@@ -1,0 +1,18 @@
+A traditional Retrieval-Augmented Generation (RAG) pipeline operates in three distinct phases: Data, Retrieval, and Generation.
+
+### 1. Data Phase
+*   **Data Collection:** Gather the raw documents or data.
+*   **Chunking & Overlap:** Break large documents into smaller text segments (chunks). Include an **overlap** (repeating a small number of tokens/characters from the end of one chunk at the beginning of the next). This creates a "bridge" between chunks so that sentences or concepts split across boundaries don't lose their meaning.
+*   **Embedding:** Convert each text chunk into a numerical vector (embedding) that captures its semantic meaning.
+*   **Store:** Save these vectors in a specialized vector database for fast searching later.
+
+### 2. Retrieval Phase
+*   **User Query:** A user submits a question or prompt.
+*   **Embed Query:** Convert the user's text query into a numerical vector using the same embedding model from the Data phase.
+*   **Similarity Search (Retrieval):** Compare the query vector against the stored database vectors to find the most relevant text chunks.
+
+### 3. Generation Phase
+*   **Prompt Engineering:** Combine the user's query and the retrieved context chunks into a structured, optimized prompt.
+*   **Pass to LLM:** Feed this structured prompt to a Large Language Model (LLM).
+*   **Response:** The LLM synthesizes the provided context to generate an accurate, final answer.
+a
