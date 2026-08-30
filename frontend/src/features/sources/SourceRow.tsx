@@ -1,0 +1,152 @@
+/**
+ * One row of the sources table: a file, its embeddings, and the verdict.
+ *
+ * The two timestamps sit side by side because the comparison between them is
+ * the whole point of the screen. A dash in either column is meaningful — no
+ * embedded date means never indexed, no storage date means the file is gone.
+ */
+
+import { StateBadge } from './StateBadge'
+import { needsReindex } from './state'
+import { ChunkList } from './ChunkList'
+import type { SourceStatus } from '../../api/types'
+import { RelativeTime } from '../../components/RelativeTime'
+import { Spinner } from '../../components/Spinner'
+
+interface SourceRowProps {
+  status: SourceStatus
+  expanded: boolean
+  /** True while an indexing run is processing this particular file. */
+  busy: boolean
+  /** Disabled while any run is in flight, to keep runs from interleaving. */
+  actionsDisabled: boolean
+  onToggle: () => void
+  onReindex: () => void
+  onDeindex: () => void
+}
+
+/** Row tint by state, so a stale file is visible without reading the badge. */
+const ROW_ACCENT: Record<string, string> = {
+  stale_content: 'border-l-state-stale',
+  stale_model: 'border-l-state-stale',
+  orphaned: 'border-l-state-orphaned',
+  current: 'border-l-state-current',
+}
+
+export function SourceRow({
+  status,
+  expanded,
+  busy,
+  actionsDisabled,
+  onToggle,
+  onReindex,
+  onDeindex,
+}: SourceRowProps) {
+  const { source, indexed, state } = status
+  const accent = ROW_ACCENT[state] ?? 'border-l-transparent'
+
+  // Only a file that still exists in storage can be indexed; an orphan's
+  // resolution is deleting its vectors instead.
+  const canReindex = source !== null && needsReindex(state)
+  const canDeindex = indexed !== null
+
+  return (
+    <>
+      <tr className={`border-l-2 ${accent} hover:bg-slate-50/70`}>
+        <td className="py-3 pr-3 pl-4">
+          <button
+            type="button"
+            onClick={onToggle}
+            className="flex items-center gap-2 text-left"
+            aria-expanded={expanded}
+          >
+            <span
+              aria-hidden="true"
+              className={`text-xs text-slate-400 transition-transform ${expanded ? 'rotate-90' : ''}`}
+            >
+              ▶
+            </span>
+            <span className="font-mono text-sm break-all text-slate-800">
+              {status.source_key}
+            </span>
+          </button>
+        </td>
+
+        {/* The storage side. */}
+        <td className="px-3 py-3 text-sm">
+          <RelativeTime value={source?.last_modified} />
+        </td>
+
+        {/* The index side. */}
+        <td className="px-3 py-3 text-sm">
+          <RelativeTime value={indexed?.embedded_at} />
+        </td>
+
+        <td className="tabular px-3 py-3 text-right text-sm text-slate-500">
+          {indexed ? indexed.chunk_count : <span className="text-slate-300">—</span>}
+        </td>
+
+        <td className="px-3 py-3">
+          <span className="flex items-center gap-2">
+            <StateBadge state={state} detail={status.detail} />
+            {busy ? <Spinner /> : null}
+          </span>
+        </td>
+
+        <td className="py-3 pr-4 pl-3 text-right whitespace-nowrap">
+          {canReindex ? (
+            <button
+              type="button"
+              onClick={onReindex}
+              disabled={actionsDisabled}
+              className="rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+            >
+              Index
+            </button>
+          ) : null}
+          {canDeindex ? (
+            <button
+              type="button"
+              onClick={onDeindex}
+              disabled={actionsDisabled}
+              className="ml-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-state-orphaned-soft hover:text-state-orphaned disabled:opacity-40"
+            >
+              Remove vectors
+            </button>
+          ) : null}
+        </td>
+      </tr>
+
+      {expanded ? (
+        <tr>
+          <td colSpan={6} className="bg-slate-50/60 p-0">
+            <div className="border-y border-slate-100">
+              {/* The provenance that links the two sides, shown verbatim. */}
+              {indexed ? (
+                <dl className="flex flex-wrap gap-x-8 gap-y-2 px-4 py-3 text-xs">
+                  <div>
+                    <dt className="text-slate-400">Document id</dt>
+                    <dd className="font-mono text-slate-600">{indexed.document_id}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-400">Storage hash now</dt>
+                    <dd className="font-mono text-slate-600">{source?.etag ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-400">Hash when embedded</dt>
+                    <dd className="font-mono text-slate-600">{indexed.source_etag || '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-slate-400">Embedding model</dt>
+                    <dd className="font-mono text-slate-600">{indexed.embedding_model || '—'}</dd>
+                  </div>
+                </dl>
+              ) : null}
+              <ChunkList sourceKey={status.source_key} />
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  )
+}
