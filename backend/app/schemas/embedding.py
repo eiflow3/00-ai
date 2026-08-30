@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from app.services.embeddings import DEFAULT_EMBEDDING_MODEL
+
 
 class Embedding(BaseModel):
     """A numerical vector that captures the semantic meaning of a chunk.
@@ -43,6 +45,6 @@ class EmbeddingRequest(BaseModel):
 
     # The embedding model to use.
     model: str = Field(
-        default="text-embedding-3-small",
+        default=DEFAULT_EMBEDDING_MODEL,
         description="Embedding model name (e.g. text-embedding-3-small)",
     )

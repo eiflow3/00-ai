@@ -37,15 +37,20 @@ class ClaudeAdapter(BaseLLMAdapter):
         After streaming, populates self.usage with token counts.
         """
         # Anthropic requires the system prompt to be separate from the
-        # messages list, so we extract it if present.
-        system_prompt = None
+        # messages list, so we extract it if present. There can be more than
+        # one system message (e.g. the caller's prompt plus a retrieved
+        # context block), so collect them all rather than keeping the last.
+        system_parts: list[str] = []
         filtered_messages = []
         for msg in messages:
             if msg["role"] == "system":
                 # Pull the system prompt out of the messages list.
-                system_prompt = msg["content"]
+                system_parts.append(msg["content"])
             else:
                 filtered_messages.append(msg)
+
+        # Join multiple system blocks in the order they were supplied.
+        system_prompt = "\n\n".join(system_parts)
 
         # Build the keyword arguments for the API call.
         kwargs = {

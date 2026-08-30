@@ -1,13 +1,30 @@
-"""POST /chat endpoint — streams LLM responses via Server-Sent Events."""
+"""POST /chat endpoint — runs retrieval, then streams the LLM answer via SSE.
+
+The router stays thin on purpose: it validates input, delegates each pipeline
+stage to a service, and serialises the results as SSE events. Retrieval,
+prompt construction, provider calls, and pricing all live in app.services.
+"""
 
 import json
+from typing import AsyncIterator
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from app.schemas.chat import ChatRequest
-from app.services.llm import get_adapter
+from app.schemas.chat import (
+    ChatRequest,
+    ChatStreamErrorEvent,
+    ChatStreamRetrievalEvent,
+    ChatStreamUsageEvent,
+    ErrorEventData,
+    RetrievalEventData,
+)
+from app.schemas.retrieval import RetrievalResult
 from app.services.cost_tracker import calculate_cost
+from app.services.llm import get_adapter
+from app.services.prompt_builder import build_messages
+from app.services.retrieval import retrieve
 
 router = APIRouter()
 
@@ -17,15 +34,61 @@ _DEFAULT_MODELS = {
     "claude": "claude-sonnet-5-latest",
 }
 
+# Fallback when a provider has no entry above.
+_FALLBACK_MODEL = "gpt-5.6-terra"
 
-@router.post("/chat")
+
+def _sse(event: ChatStreamRetrievalEvent | ChatStreamErrorEvent | ChatStreamUsageEvent) -> dict:
+    """Serialise a typed stream event into the dict sse-starlette expects.
+
+    Going through the schema models keeps every event's payload defined in
+    one place — the same models the OpenAPI docs describe.
+    """
+    payload = event.data
+    # Retrieval and error payloads are pydantic models; the usage payload is
+    # the cost tracker's dataclass, which rounds its own floats in to_dict().
+    data = (
+        payload.model_dump_json()
+        if isinstance(payload, BaseModel)
+        else json.dumps(payload.to_dict())
+    )
+    return {"event": event.event, "data": data}
+
+
+@router.post(
+    "/chat",
+    responses={
+        200: {
+            "description": "Server-Sent Events (SSE) stream containing retrieval results and the LLM response.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {
+                        "type": "string",
+                        "example": (
+                            "event: retrieval\ndata: {\"query\": \"...\", \"chunks\": [{\"chunk_id\": \"c1\", \"score\": 0.87, ...}]}\n\n"
+                            "data: Hello\n\ndata:  world\n\n"
+                            "event: usage\ndata: {\"input_tokens\": 10, ...}\n\n"
+                        )
+                    },
+                    "description": (
+                        "A leading `event: retrieval` with the matched chunks and their similarity "
+                        "scores, then text chunks (`data: <text>`), then a final `event: usage` "
+                        "with token counts and cost. A non-fatal `event: error` may precede the "
+                        "retrieval event if that stage failed."
+                    )
+                }
+            }
+        }
+    }
+)
 async def chat(body: ChatRequest):
-    """Stream a chat response from the selected LLM provider.
+    """Retrieve relevant context, then stream a grounded chat response.
 
     1. Resolves the correct adapter via the factory.
-    2. Builds the messages list (system prompt + context + user query).
-    3. Returns an SSE stream of text deltas.
-    4. Sends a final "usage" event with token counts and cost breakdown.
+    2. Runs the retrieval pipeline (embed query -> vector search -> rank).
+    3. Emits a "retrieval" event with each chunk and its similarity score.
+    4. Streams the LLM's text deltas, grounded in those chunks.
+    5. Sends a final "usage" event with token counts and cost breakdown.
     """
     # Get the adapter for the requested provider.
     try:
@@ -34,33 +97,53 @@ async def chat(body: ChatRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Resolve the model — use the client's override or fall back to the default.
-    model = body.model or _DEFAULT_MODELS.get(body.provider, "gpt-5.6-terra")
+    model = body.model or _DEFAULT_MODELS.get(body.provider, _FALLBACK_MODEL)
 
-    # Build the messages list that the adapter will send to the LLM.
-    messages: list[dict] = []
+    async def event_generator() -> AsyncIterator[dict]:
+        """Yield the retrieval event, the text deltas, then the usage event."""
+        # --- Retrieval phase ------------------------------------------------
+        # Client-supplied chunks win, so a caller that already ran retrieval
+        # (or is replaying a conversation) isn't charged for it twice.
+        if body.context_chunks:
+            result = RetrievalResult(
+                query=body.query,
+                chunks=body.context_chunks,
+                total_searched=len(body.context_chunks),
+            )
+        elif body.use_rag:
+            try:
+                result = await retrieve(
+                    body.query,
+                    top_k=body.top_k,
+                    score_threshold=body.score_threshold,
+                    embedding_model=body.embedding_model,
+                )
+            except Exception as exc:
+                # Retrieval is best-effort: tell the client it failed, then
+                # answer without context rather than dropping the request.
+                yield _sse(ChatStreamErrorEvent(
+                    data=ErrorEventData(stage="retrieval", message=str(exc))
+                ))
+                result = RetrievalResult(query=body.query)
+        else:
+            result = RetrievalResult(query=body.query)
 
-    # Add the system prompt if provided.
-    if body.system_prompt:
-        messages.append({"role": "system", "content": body.system_prompt})
+        # Emit the retrieved chunks — with scores — before any generated text,
+        # so the client can render citations while the answer streams in.
+        yield _sse(ChatStreamRetrievalEvent(data=RetrievalEventData(
+            query=result.query,
+            chunks=result.chunks,
+            total_searched=result.total_searched,
+            embedding_model=body.embedding_model,
+        )))
 
-    # If context chunks were provided (from the retrieval phase), inject them
-    # into a system-level context block so the LLM can reference them.
-    if body.context_chunks:
-        # Format each chunk into a readable block for the LLM.
-        context_text = "\n\n".join(
-            f"[Chunk {c.chunk_id} | score={c.score:.3f}]\n{c.content}"
-            for c in body.context_chunks
+        # --- Generation phase -----------------------------------------------
+        messages = build_messages(
+            query=body.query,
+            chunks=result.chunks,
+            system_prompt=body.system_prompt,
         )
-        messages.append({
-            "role": "system",
-            "content": f"Use the following context to answer the user's question:\n\n{context_text}",
-        })
 
-    # Add the user's actual query as the final message.
-    messages.append({"role": "user", "content": body.query})
-
-    # Create an async generator that yields SSE-formatted events.
-    async def event_generator():
         # Stream text deltas from the LLM adapter.
         async for token in adapter.stream(messages, model, body.temperature):
             # Each yield sends a "data: <token>\n\n" SSE event to the client.
@@ -72,7 +155,7 @@ async def chat(body: ChatRequest):
             cost = calculate_cost(model, adapter.usage)
             # Send a separate "usage" event so the client can distinguish
             # cost metadata from the text stream.
-            yield {"event": "usage", "data": json.dumps(cost.to_dict())}
+            yield _sse(ChatStreamUsageEvent(data=cost))
 
     # Return the SSE streaming response.
     # media_type ensures the browser/client treats this as an event stream.

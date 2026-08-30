@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     )
     pinecone_index_name: str = "rag-index"
 
+    # Embedding model — coupled to the *contents* of the Pinecone index, not to
+    # the environment.  Chunk vectors and query vectors must come from this same
+    # model, so changing it invalidates every stored vector and requires a
+    # re-index.  Kept here (not in .env) so that change is visible in a diff.
+    embedding_model: str = "text-embedding-3-small"
+
     # Anthropic (Claude) — same AliasChoices pattern to read ANTHROPIC_API_KEY
     # directly from env, bypassing the APP_ prefix.
     anthropic_api_key: str = Field(
