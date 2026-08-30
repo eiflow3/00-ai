@@ -116,6 +116,37 @@ async def get_object(key: str) -> bytes:
     return await asyncio.to_thread(_get)
 
 
+async def put_object(key: str, data: bytes, content_type: str = "text/plain") -> SourceObject:
+    """Write an object, creating it or overwriting whatever is at that key.
+
+    Returns the stored object rather than nothing, so the caller gets the new
+    etag and last-modified time without a second round trip — and those are
+    exactly the fields the staleness comparison runs on.
+
+    Args:
+        key: The object key within the bucket.
+        data: The file's raw contents.
+        content_type: MIME type recorded on the object.
+
+    Returns:
+        The object as it now exists in the store.
+    """
+
+    def _put() -> SourceObject:
+        client = ObjectStoreManager.get_client()
+        client.put_object(
+            Bucket=settings.r2_bucket, Key=key, Body=data, ContentType=content_type
+        )
+        # put_object's own response carries the etag but not the timestamp the
+        # store settled on, so read it back rather than inventing one.
+        response = client.head_object(Bucket=settings.r2_bucket, Key=key)
+        return _to_source_object(
+            {**response, "Key": key, "Size": response.get("ContentLength", len(data))}
+        )
+
+    return await asyncio.to_thread(_put)
+
+
 async def head_object(key: str) -> SourceObject:
     """Fetch one object's metadata without downloading its contents.
 

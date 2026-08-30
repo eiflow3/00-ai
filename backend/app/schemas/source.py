@@ -183,3 +183,28 @@ class DeindexResponse(BaseModel):
 
     # How many vectors were deleted. Zero means nothing was indexed.
     deleted: int = Field(default=0, ge=0, description="Number of vectors deleted")
+
+
+class UploadResponse(BaseModel):
+    """Result of writing a file into object storage.
+
+    Returned by both upload and replace so a client handles one shape. The
+    file's fresh status is included because a write changes which side of the
+    pipeline knows about it — a caller should not have to re-list to find out.
+    """
+
+    # The file's state after the write. A new upload is `not_indexed`; a
+    # replace is too, since replacing discards the old vectors.
+    status: SourceStatus = Field(..., description="The file's state after the write")
+
+    # Whether this overwrote an existing file rather than creating one.
+    replaced: bool = Field(
+        default=False, description="True when this overwrote an existing file"
+    )
+
+    # Vectors discarded because the file they described was replaced.
+    pruned: int = Field(
+        default=0,
+        ge=0,
+        description="Vectors removed because their source content was replaced",
+    )

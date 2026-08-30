@@ -49,6 +49,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("R2_BUCKET", "r2_bucket"),
     )
 
+    # Largest file accepted through the upload endpoints.  Bounded because an
+    # oversized document is an embedding bill, not just a large object.
+    max_upload_bytes: int = 10 * 1024 * 1024
+
     @property
     def r2_endpoint_url(self) -> str:
         """S3-compatible endpoint for this account's R2 storage."""

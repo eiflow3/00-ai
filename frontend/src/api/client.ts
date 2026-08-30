@@ -16,6 +16,7 @@ import type {
   IndexState,
   SourceDetail,
   SourceStatus,
+  UploadResponse,
 } from './types'
 
 /** Backend origin. Overridden per environment; the default matches `npm run app:api`. */
@@ -111,6 +112,46 @@ export function getSource(sourceKey: string, signal?: AbortSignal): Promise<Sour
 export function deindexSource(sourceKey: string): Promise<DeindexResponse> {
   return request<DeindexResponse>(url(`/sources/${encodeKey(sourceKey)}/index`), {
     method: 'DELETE',
+  })
+}
+
+/**
+ * Upload a new file into object storage.
+ *
+ * The file is stored but not indexed — indexing is a separate, deliberate step.
+ * A key that is already taken is refused rather than overwritten.
+ *
+ * @param file - The file to store.
+ * @param prefix - Folder to place it under, if any.
+ * @throws ApiError - 400 if the file is unacceptable, 409 if the key is taken.
+ */
+export function uploadSource(file: File, prefix = ''): Promise<UploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('prefix', prefix)
+
+  // No Content-Type header: the browser must set it itself so the multipart
+  // boundary matches the body it generates.
+  return request<UploadResponse>(url('/sources/upload'), { method: 'POST', body: form })
+}
+
+/**
+ * Replace one file's contents, discarding every vector built from the old ones.
+ *
+ * The key comes from `sourceKey`, not from the file's own name — a replace
+ * targets an existing row, whatever the chosen file happens to be called. The
+ * caller should confirm an obvious name mismatch with the user first.
+ *
+ * @param sourceKey - The object key to overwrite.
+ * @param file - The replacement file.
+ */
+export function replaceSource(sourceKey: string, file: File): Promise<UploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+
+  return request<UploadResponse>(url(`/sources/${encodeKey(sourceKey)}`), {
+    method: 'PUT',
+    body: form,
   })
 }
 

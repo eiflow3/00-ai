@@ -8,7 +8,9 @@
 
 import { StateBadge } from './StateBadge'
 import { needsReindex } from './state'
+import { ACCEPT_ATTRIBUTE } from './uploadRules'
 import { ChunkList } from './ChunkList'
+import { useRef } from 'react'
 import type { SourceStatus } from '../../api/types'
 import { RelativeTime } from '../../components/RelativeTime'
 import { Spinner } from '../../components/Spinner'
@@ -23,6 +25,8 @@ interface SourceRowProps {
   onToggle: () => void
   onReindex: () => void
   onDeindex: () => void
+  /** Hand the chosen file up; the view decides whether to confirm first. */
+  onReplace: (file: File) => void
 }
 
 /** Row tint by state, so a stale file is visible without reading the badge. */
@@ -41,7 +45,9 @@ export function SourceRow({
   onToggle,
   onReindex,
   onDeindex,
+  onReplace,
 }: SourceRowProps) {
+  const fileInput = useRef<HTMLInputElement>(null)
   const { source, indexed, state } = status
   const accent = ROW_ACCENT[state] ?? 'border-l-transparent'
 
@@ -49,6 +55,8 @@ export function SourceRow({
   // resolution is deleting its vectors instead.
   const canReindex = source !== null && needsReindex(state)
   const canDeindex = indexed !== null
+  // An orphan has no file left to replace — only vectors to remove.
+  const canReplace = source !== null
 
   return (
     <>
@@ -94,6 +102,30 @@ export function SourceRow({
         </td>
 
         <td className="py-3 pr-4 pl-3 text-right whitespace-nowrap">
+          {canReplace ? (
+            <>
+              <input
+                ref={fileInput}
+                type="file"
+                accept={ACCEPT_ATTRIBUTE}
+                className="hidden"
+                onChange={(event) => {
+                  const [file] = event.target.files ?? []
+                  if (file) onReplace(file)
+                  // Reset so re-picking the same file still fires a change.
+                  event.target.value = ''
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                disabled={actionsDisabled}
+                className="mr-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+              >
+                Replace
+              </button>
+            </>
+          ) : null}
           {canReindex ? (
             <button
               type="button"

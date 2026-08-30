@@ -78,6 +78,22 @@ export interface SourceDetail {
   chunks: SourceChunk[]
 }
 
+/**
+ * Result of writing a file into object storage.
+ *
+ * Both upload and replace return this shape. The status is included because a
+ * write changes which side of the pipeline knows about the file — the caller
+ * does not have to re-list to find out.
+ */
+export interface UploadResponse {
+  /** The file's state after the write; `not_indexed` in both cases. */
+  status: SourceStatus
+  /** Whether this overwrote an existing file rather than creating one. */
+  replaced: boolean
+  /** Vectors discarded because the content they described was replaced. */
+  pruned: number
+}
+
 /** Result of removing a file's vectors. */
 export interface DeindexResponse {
   source_key: string

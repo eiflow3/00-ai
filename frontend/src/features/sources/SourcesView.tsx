@@ -10,13 +10,17 @@ import { useCallback, useMemo, useState } from 'react'
 
 import { IndexProgress } from './IndexProgress'
 import { SourceRow } from './SourceRow'
+import { UploadPanel } from './UploadPanel'
 import { needsReindex } from './state'
-import { deindexSource } from '../../api/client'
+import { basename } from './uploadRules'
+import { deindexSource, replaceSource } from '../../api/client'
 import type { IndexState } from '../../api/types'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { EmptyState } from '../../components/EmptyState'
 import { Spinner } from '../../components/Spinner'
 import { useIndexRun } from '../../hooks/useIndexRun'
 import { useSources } from '../../hooks/useSources'
+import { useUpload } from '../../hooks/useUpload'
 
 /** The filter options, in the order they read most naturally. */
 const FILTERS: { value: IndexState | 'all'; label: string }[] = [
@@ -27,9 +31,17 @@ const FILTERS: { value: IndexState | 'all'; label: string }[] = [
   { value: 'orphaned', label: 'Orphaned' },
 ]
 
+/** A replace waiting on the user, because the chosen file has a different name. */
+interface PendingReplace {
+  sourceKey: string
+  file: File
+}
+
 export function SourcesView() {
   const [filter, setFilter] = useState<IndexState | 'all'>('all')
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [pending, setPending] = useState<PendingReplace | null>(null)
+  const [replaceError, setReplaceError] = useState<string | null>(null)
 
   const { sources, loading, error, refresh, merge } = useSources(
     filter === 'all' ? undefined : filter,
@@ -38,6 +50,9 @@ export function SourcesView() {
   // A finished run reports each file's re-read status, so the table updates
   // from the stream itself rather than issuing another list request.
   const run = useIndexRun(merge)
+
+  // A new file is not in the table yet, so re-read rather than merging it in.
+  const upload = useUpload(refresh)
 
   const staleCount = useMemo(
     () => sources.filter((status) => needsReindex(status.state)).length,
@@ -55,6 +70,37 @@ export function SourcesView() {
       refresh()
     },
     [refresh],
+  )
+
+  /** Send the replacement, then show the file's new state. */
+  const performReplace = useCallback(
+    async (sourceKey: string, file: File) => {
+      setReplaceError(null)
+      try {
+        const response = await replaceSource(sourceKey, file)
+        // Replacing discards the old vectors, so the row's state changes on
+        // both sides — take it from the response rather than re-listing.
+        merge([response.status])
+      } catch (cause: unknown) {
+        setReplaceError(cause instanceof Error ? cause.message : String(cause))
+      }
+    },
+    [merge],
+  )
+
+  /**
+   * Replacing a row with a differently-named file is usually a slip and
+   * occasionally deliberate, so ask rather than refuse.
+   */
+  const handleReplace = useCallback(
+    (sourceKey: string, file: File) => {
+      if (file.name === basename(sourceKey)) {
+        void performReplace(sourceKey, file)
+        return
+      }
+      setPending({ sourceKey, file })
+    },
+    [performReplace],
   )
 
   return (
@@ -104,6 +150,13 @@ export function SourcesView() {
         ))}
       </nav>
 
+      <UploadPanel
+        items={upload.items}
+        uploading={upload.uploading}
+        onUpload={(files) => void upload.upload(files)}
+        onDismiss={upload.reset}
+      />
+
       <IndexProgress
         running={run.running}
         progress={run.progress}
@@ -114,6 +167,12 @@ export function SourcesView() {
         onCancel={run.cancel}
         onDismiss={run.reset}
       />
+
+      {replaceError ? (
+        <p className="mb-4 rounded-lg border border-state-orphaned-soft bg-state-orphaned-soft px-4 py-3 text-sm text-state-orphaned">
+          {replaceError}
+        </p>
+      ) : null}
 
       {error ? (
         <p className="rounded-lg border border-state-orphaned-soft bg-state-orphaned-soft px-4 py-3 text-sm text-state-orphaned">
@@ -157,12 +216,34 @@ export function SourcesView() {
                   onToggle={() => toggle(status.source_key)}
                   onReindex={() => run.start({ keys: [status.source_key] })}
                   onDeindex={() => void handleDeindex(status.source_key)}
+                  onReplace={(file) => handleReplace(status.source_key, file)}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      <ConfirmDialog
+        open={pending !== null}
+        title="The file names do not match"
+        confirmLabel="Replace anyway"
+        onCancel={() => setPending(null)}
+        onConfirm={() => {
+          if (pending) void performReplace(pending.sourceKey, pending.file)
+          setPending(null)
+        }}
+      >
+        <p>
+          You picked <span className="font-mono">{pending?.file.name}</span>, but this row
+          is <span className="font-mono">{basename(pending?.sourceKey ?? '')}</span>.
+        </p>
+        <p className="mt-2">
+          Continuing stores the new contents under{' '}
+          <span className="font-mono">{pending?.sourceKey}</span> and discards every chunk
+          embedded from the old version.
+        </p>
+      </ConfirmDialog>
     </div>
   )
 }

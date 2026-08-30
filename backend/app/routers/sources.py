@@ -10,10 +10,11 @@ app.services.
 import json
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from app.config import settings
 from app.docs.sources import (
     DEINDEX_DESCRIPTION,
     GET_SOURCE_DESCRIPTION,
@@ -21,7 +22,11 @@ from app.docs.sources import (
     INDEX_SOURCES_DESCRIPTION,
     INDEX_SOURCES_RESPONSES,
     LIST_SOURCES_DESCRIPTION,
+    REPLACE_DESCRIPTION,
+    REPLACE_RESPONSES,
     SOURCES_TAG,
+    UPLOAD_DESCRIPTION,
+    UPLOAD_RESPONSES,
 )
 from app.schemas.ingestion import IndexRequest
 from app.schemas.source import (
@@ -29,8 +34,10 @@ from app.schemas.source import (
     IndexState,
     SourceDetail,
     SourceStatus,
+    UploadResponse,
 )
-from app.services import index_catalog, ingestion, sync_status
+from app.services import index_catalog, ingestion, sync_status, uploads
+from app.services.uploads import UploadRejected
 
 router = APIRouter(prefix="/sources", tags=[SOURCES_TAG])
 
@@ -106,6 +113,85 @@ async def index_sources(body: IndexRequest):
             yield _sse(event)
 
     return EventSourceResponse(event_generator())
+
+
+@router.post(
+    "/upload",
+    response_model=UploadResponse,
+    status_code=201,
+    summary="Upload a new source file",
+    response_description="The stored file's state, ready to be indexed.",
+    description=UPLOAD_DESCRIPTION,
+    responses=UPLOAD_RESPONSES,
+)
+async def upload_source(
+    file: UploadFile = File(..., description="The file to store"),
+    prefix: str = Form(default="", description="Folder to place the file under"),
+) -> UploadResponse:
+    """Store a new file in object storage, leaving it unindexed.
+
+    Args:
+        file: The uploaded file.
+        prefix: Folder to place it under, if any.
+
+    Returns:
+        The file's state after the write.
+
+    Raises:
+        HTTPException: 400 if the file is unacceptable, 409 if the key is taken.
+    """
+    data = await file.read()
+
+    try:
+        stored = await uploads.upload_new(file.filename or "", data, prefix)
+    except UploadRejected as exc:
+        # A taken key is a conflict, not a malformed request — the client's
+        # recourse is to replace instead, which is a different endpoint.
+        status_code = 409 if "already exists" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc))
+
+    return UploadResponse(status=await sync_status.get_status(stored.key))
+
+
+@router.put(
+    "/{source_key:path}",
+    response_model=UploadResponse,
+    summary="Replace a file's contents and discard its embeddings",
+    response_description="The file's state after the write, and how many vectors were pruned.",
+    description=REPLACE_DESCRIPTION,
+    responses=REPLACE_RESPONSES,
+)
+async def replace_source(
+    source_key: str,
+    file: UploadFile = File(..., description="The replacement file"),
+) -> UploadResponse:
+    """Overwrite a file and delete every vector built from its old contents.
+
+    Args:
+        source_key: The object key to overwrite. Declared as a path parameter
+            so keys containing slashes are matched whole.
+        file: The replacement file. Its own name is ignored — the key is the
+            one being replaced.
+
+    Returns:
+        The file's state after the write, and the number of vectors pruned.
+
+    Raises:
+        HTTPException: 400 if the replacement file is unacceptable.
+    """
+    data = await file.read()
+
+    try:
+        stored, pruned = await uploads.replace(source_key, data, file.filename or "")
+    except UploadRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Built from what this call just did, not re-read from the index: a delete
+    # takes a moment to propagate, and reading it back too soon would report
+    # the file as stale when its vectors are in fact already gone.
+    status = sync_status.build_status(stored, None, settings.embedding_model)
+
+    return UploadResponse(status=status, replaced=True, pruned=pruned)
 
 
 @router.get(

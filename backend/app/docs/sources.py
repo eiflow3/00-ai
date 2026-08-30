@@ -126,6 +126,75 @@ document from retrieval without deleting the original. Indexing the same key
 again restores it.
 """
 
+UPLOAD_DESCRIPTION = """\
+Upload a new file into object storage.
+
+The file is stored but **not** indexed — it appears in the list as
+`not_indexed`, ready for an indexing run you trigger. Uploading and embedding
+stay separate so a batch of files can be added and then embedded in one pass.
+
+Only file types the pipeline can read are accepted; anything else is refused
+rather than stored, so the file list never fills with rows indexing will skip.
+
+Uploading to a key that already exists is refused with `409` — overwriting is
+what `PUT /sources/{source_key}` is for, and it has different consequences for
+the existing embeddings.
+"""
+
+REPLACE_DESCRIPTION = """\
+Replace the contents of an existing file, and discard the vectors built from
+the old contents.
+
+Every chunk embedded from the previous version is deleted as part of this call.
+Between replacing and re-indexing, the file therefore contributes nothing to
+retrieval — which is deliberate: chunks describing content that no longer
+exists are worse than none, because they are cited with full confidence.
+
+The key comes from the path, not from the uploaded file's name. A replace
+targets an existing entry, so its identity is that entry's whatever the chosen
+file happens to be called; a client should confirm an obvious name mismatch
+with the user before calling this.
+
+The file is left `not_indexed`. Run the pipeline to embed the new contents.
+"""
+
+UPLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "description": "The file was refused — an unreadable type, an empty file, "
+        "or one over the size limit.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": "Only .markdown, .md, .txt files can be indexed, so "
+                    "other types are not accepted."
+                }
+            }
+        },
+    },
+    409: {
+        "description": "A file already exists at that key. Replace it instead.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": "A file already exists at 'policy.md'. Replace it "
+                    "instead of uploading over it."
+                }
+            }
+        },
+    },
+}
+
+REPLACE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "description": "The replacement file was refused — an unreadable type, an "
+        "empty file, or one over the size limit.",
+        "content": {
+            "application/json": {"example": {"detail": "The file is empty."}}
+        },
+    }
+}
+
+
 _INDEX_STREAM_DESCRIPTION = """\
 A `text/event-stream` reporting the run's progress. Events arrive in this order:
 
