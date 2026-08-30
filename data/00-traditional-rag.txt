@@ -15,4 +15,3 @@ A traditional Retrieval-Augmented Generation (RAG) pipeline operates in three di
 *   **Prompt Engineering:** Combine the user's query and the retrieved context chunks into a structured, optimized prompt.
 *   **Pass to LLM:** Feed this structured prompt to a Large Language Model (LLM).
 *   **Response:** The LLM synthesizes the provided context to generate an accurate, final answer.
-a

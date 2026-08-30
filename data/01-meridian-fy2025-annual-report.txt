@@ -1,0 +1,321 @@
+MERIDIAN FREIGHTWORKS, INC.
+ANNUAL REPORT — FISCAL YEAR 2025
+For the fiscal year ended December 31, 2025
+
+NOTICE: Meridian Freightworks, Inc. is a fictional company. This document is
+synthetic test data created for evaluating retrieval-augmented generation
+systems. All figures, people, and events described herein are invented.
+
+
+================================================================================
+SECTION 1. LETTER FROM THE CHIEF EXECUTIVE OFFICER
+================================================================================
+
+To our shareholders,
+
+Fiscal 2025 was the year Meridian Freightworks stopped being a trucking company
+that sells software and became a logistics platform that also moves freight.
+
+We closed the year with total revenue of $2,833.0 million, up 13.1 percent from
+fiscal 2024. More importantly, the mix shifted. Our Digital Platform segment
+grew 43.7 percent and now contributes roughly nine percent of revenue at four
+times the operating margin of our ground network. Cold Chain, which we rebuilt
+almost entirely between 2022 and 2024, grew 19.8 percent and delivered its first
+full year of double-digit operating margins.
+
+We did this while absorbing a difficult freight market. Spot rates in North
+American dry van fell for three consecutive quarters before stabilizing in
+September. Our answer was density, not discounting: we raised on-time delivery
+to 94.6 percent from 92.8 percent, and we let go of roughly $40 million in
+low-margin brokered volume rather than defend it on price.
+
+In August we initiated our first quarterly dividend, at $0.12 per share. We also
+repurchased $125.0 million of stock. Both reflect a balance sheet that ended the
+year at 0.63 times net leverage.
+
+I want to thank our 11,482 colleagues. The freight moved because they moved it.
+
+Adaeze Okonkwo
+Chief Executive Officer
+February 27, 2026
+
+
+================================================================================
+SECTION 2. COMPANY OVERVIEW
+================================================================================
+
+2.1 Business Description
+
+Meridian Freightworks, Inc. ("Meridian" or "the Company") is a North American
+freight and logistics provider headquartered in Columbus, Ohio. The Company was
+founded in 1987 as Meridian Trucking Co. and adopted its current name in 2011.
+Meridian's common stock trades on the Nasdaq Global Select Market under the
+ticker symbol MFWX.
+
+Meridian operates through three reportable segments:
+
+  - Ground Freight: less-than-truckload and full-truckload transportation
+    across the continental United States, Canada, and northern Mexico.
+  - Cold Chain: temperature-controlled transportation and warehousing for
+    food, agricultural, and pharmaceutical customers.
+  - Digital Platform: MeridianOne, a subscription software product that gives
+    shippers rate benchmarking, load tendering, and shipment visibility.
+
+2.2 Fiscal Year
+
+Meridian's fiscal year ends on December 31. References to "fiscal 2025" or
+"FY2025" mean the twelve months ended December 31, 2025.
+
+2.3 Physical Footprint
+
+As of December 31, 2025, Meridian operated 43 distribution centers and 12
+dedicated cold-storage facilities. The Company's fleet consisted of 3,140
+tractors and 8,265 trailers. Of the tractor fleet, 128 units were battery
+electric, up from 41 units at the end of fiscal 2024.
+
+
+================================================================================
+SECTION 3. FINANCIAL HIGHLIGHTS
+================================================================================
+
+3.1 Consolidated Results
+
+All amounts in millions of U.S. dollars except per-share data.
+
+                                      FY2025        FY2024      Change
+  Total revenue                      2,833.0       2,505.4      +13.1%
+  Operating income                     251.5         198.3      +26.8%
+  Operating margin                       8.9%          7.9%    +100 bps
+  Interest expense                      34.2          37.9       -9.8%
+  Other income, net                      6.7           4.1      +63.4%
+  Income before income taxes           224.0         164.5      +36.2%
+  Income tax expense                    54.9          32.8      +67.4%
+  Net income                           169.1         131.7      +28.4%
+  Net margin                             6.0%          5.3%     +70 bps
+  Diluted earnings per share            2.01          1.55      +29.7%
+  Diluted weighted average shares       84.3          85.1       -0.9%
+
+3.2 Non-GAAP and Cash Flow Measures
+
+  Adjusted EBITDA                      438.7         361.2      +21.5%
+  Adjusted EBITDA margin                15.5%         14.4%    +110 bps
+  Net cash from operating activities   391.2         318.6      +22.8%
+  Capital expenditures                 166.5         149.3      +11.5%
+  Free cash flow                       224.7         169.3      +32.7%
+
+Free cash flow is defined as net cash from operating activities less capital
+expenditures. Adjusted EBITDA excludes stock-based compensation of $61.4
+million, restructuring charges of $22.9 million, and the $18.5 million legal
+accrual described in Section 9.2.
+
+3.3 Quarterly Revenue, FY2025
+
+  Q1 2025                              662.4
+  Q2 2025                              701.8
+  Q3 2025                              715.2
+  Q4 2025                              753.6
+  Full year                          2,833.0
+
+3.4 Balance Sheet Summary
+
+As of December 31, 2025:
+
+  Cash and cash equivalents            412.9
+  Total debt                           687.5
+  Net debt                             274.6
+  Total assets                       3,164.8
+  Total shareholders' equity         1,489.3
+  Net debt to Adjusted EBITDA          0.63x
+
+
+================================================================================
+SECTION 4. SEGMENT PERFORMANCE
+================================================================================
+
+4.1 Ground Freight
+
+Ground Freight generated revenue of $1,842.6 million in fiscal 2025, an increase
+of 7.5 percent from $1,714.2 million in fiscal 2024. Segment operating income
+was $147.4 million, representing an operating margin of 8.0 percent.
+
+Volume growth was modest at 2.1 percent measured in shipments, with the balance
+of revenue growth coming from a 4.9 percent increase in revenue per shipment.
+The segment exited approximately $40 million of brokered volume during the third
+quarter. On-time delivery for the segment reached 94.6 percent, compared with
+92.8 percent in fiscal 2024.
+
+Ground Freight employed 7,236 people as of December 31, 2025.
+
+4.2 Cold Chain
+
+Cold Chain generated revenue of $734.1 million in fiscal 2025, an increase of
+19.8 percent from $612.8 million in fiscal 2024. Segment operating income was
+$95.4 million, representing an operating margin of 13.0 percent — the segment's
+first full year above ten percent.
+
+Growth was driven primarily by pharmaceutical customers, which grew 31 percent
+year over year and now represent 22 percent of segment revenue. Temperature
+compliance, measured as the share of shipments held continuously within the
+contracted temperature band, was 99.3 percent.
+
+Cold Chain employed 2,614 people as of December 31, 2025. The segment is led by
+Marcus Reyes, Senior Vice President, Cold Chain.
+
+4.3 Digital Platform
+
+Digital Platform generated revenue of $256.3 million in fiscal 2025, an increase
+of 43.7 percent from $178.4 million in fiscal 2024. Segment operating income was
+$61.5 million, representing an operating margin of 24.0 percent.
+
+Annual recurring revenue reached $271.4 million exiting the year. MeridianOne
+served 1,847 active shipper accounts, up from 1,302 a year earlier. Net revenue
+retention was 118 percent. The segment employed 986 people as of December 31,
+2025.
+
+4.4 Corporate and Unallocated
+
+Corporate and unallocated costs were $52.8 million in fiscal 2025. These costs
+include executive compensation, corporate legal, and shared technology services
+not attributed to a reportable segment. Corporate functions employed 646 people
+as of December 31, 2025.
+
+
+================================================================================
+SECTION 5. CUSTOMERS AND CONCENTRATION
+================================================================================
+
+Meridian's ten largest customers accounted for 31.4 percent of consolidated
+revenue in fiscal 2025, compared with 34.9 percent in fiscal 2024. The single
+largest customer, a national grocery chain served primarily by the Cold Chain
+segment, accounted for 8.7 percent of consolidated revenue.
+
+No other customer accounted for more than 5 percent of consolidated revenue in
+either fiscal year. The Company's customer contracts are generally terminable on
+60 to 90 days notice.
+
+
+================================================================================
+SECTION 6. HUMAN CAPITAL
+================================================================================
+
+As of December 31, 2025, Meridian employed 11,482 people, compared with 10,915
+at the end of fiscal 2024. Of these, 4,918 were drivers.
+
+Headcount by segment:
+
+  Ground Freight                       7,236
+  Cold Chain                           2,614
+  Digital Platform                       986
+  Corporate                              646
+  Total                               11,482
+
+Voluntary driver turnover was 41 percent in fiscal 2025, down from 58 percent in
+fiscal 2024. The Company attributes the improvement to a pay restructuring
+completed in April 2025 that moved 2,100 drivers from mileage-based pay to a
+guaranteed weekly minimum.
+
+The Company's Chief People Officer is Marisol Reyes, who joined Meridian in
+January 2024.
+
+
+================================================================================
+SECTION 7. SUSTAINABILITY
+================================================================================
+
+Fiscal 2025 emissions:
+
+  Scope 1 (direct)                   214,600 tCO2e
+  Scope 2 (purchased energy)          38,900 tCO2e
+  Scope 3 (value chain)              611,200 tCO2e
+
+Meridian has committed to reducing combined Scope 1 and Scope 2 emissions by 30
+percent by 2030, measured against a 2021 baseline of 298,400 tCO2e. As of the
+end of fiscal 2025, combined Scope 1 and Scope 2 emissions were 253,500 tCO2e,
+a reduction of 15.0 percent from the baseline.
+
+The Company added 87 battery electric tractors during fiscal 2025, bringing the
+total electric fleet to 128 units. Nine cold-storage facilities were converted
+to natural refrigerants during the year.
+
+
+================================================================================
+SECTION 8. GOVERNANCE AND LEADERSHIP
+================================================================================
+
+8.1 Executive Officers
+
+  Adaeze Okonkwo        Chief Executive Officer (appointed March 2023)
+  Priya Raghunathan     Chief Financial Officer (appointed June 2021)
+  Tomás Beltrán         Chief Operating Officer
+  Lena Vasquez          Chief Technology Officer
+  Marisol Reyes         Chief People Officer
+  Marcus Reyes          Senior Vice President, Cold Chain
+
+8.2 Board of Directors
+
+The Board consists of nine directors, seven of whom are independent. Harold
+Ndlovu has served as non-executive Chair since 2019. The Board maintains Audit,
+Compensation, and Nominating and Governance committees.
+
+8.3 Chief Executive Compensation
+
+For fiscal 2025, Ms. Okonkwo received a base salary of $1.15 million and a
+target annual bonus of 150 percent of base salary. Total reported compensation,
+including equity awards valued at $9.1 million, was $12.4 million.
+
+
+================================================================================
+SECTION 9. RISK FACTORS
+================================================================================
+
+9.1 Operating and Market Risks
+
+  - Driver availability. A sustained shortage of qualified commercial drivers
+    could constrain capacity and increase wage costs.
+  - Fuel price volatility. Approximately 68 percent of fuel cost exposure is
+    recovered through customer surcharges; the remainder is unhedged.
+  - Freight cycle exposure. Roughly 27 percent of Ground Freight revenue is
+    priced on the spot market and reprices within 30 days.
+  - Customer concentration. See Section 5.
+  - Cybersecurity. A breach of the MeridianOne platform could expose customer
+    shipment and pricing data.
+
+9.2 Legal Proceedings
+
+In August 2024, a putative class action was filed in California Superior Court
+alleging that the Company misclassified approximately 1,400 owner-operator
+drivers as independent contractors. The Company recorded an accrual of $18.5
+million in fiscal 2025 related to this matter. The Company believes the range of
+reasonably possible loss in excess of the accrual is not material.
+
+
+================================================================================
+SECTION 10. CAPITAL RETURN AND OUTLOOK
+================================================================================
+
+10.1 Capital Return
+
+Meridian declared its first quarterly cash dividend of $0.12 per share in August
+2025, paid in the third and fourth quarters of fiscal 2025. The Company
+repurchased 2.4 million shares for $125.0 million during fiscal 2025.
+
+10.2 Fiscal 2026 Guidance
+
+  Total revenue                      $3.05 billion to $3.15 billion
+  Adjusted EBITDA margin             15.8% to 16.4%
+  Capital expenditures               $180 million to $200 million
+  Diluted share count                approximately 83 million
+
+Guidance assumes no material change in the North American freight rate
+environment and excludes the effect of the pending acquisition described in
+Section 10.3.
+
+10.3 Subsequent Events
+
+On February 11, 2026, Meridian announced a definitive agreement to acquire
+Kestrel Cold Storage, LLC for $148.0 million in cash. Kestrel operates six
+cold-storage facilities in the Pacific Northwest. The transaction is expected to
+close in the second quarter of fiscal 2026, subject to customary regulatory
+approvals.
+
+END OF REPORT

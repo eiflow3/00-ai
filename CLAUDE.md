@@ -1,0 +1,1 @@
+* Avoid adding the models name as co-author when pushing commits.
