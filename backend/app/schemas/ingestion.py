@@ -85,6 +85,13 @@ class IndexStartedEventData(BaseModel):
         default="", description="Embedding model used for this run"
     )
 
+    # Files this run skipped because another run is already embedding them.
+    # Not an error: the work is happening, just not here.
+    busy: list[str] = Field(
+        default_factory=list,
+        description="Keys skipped because another run is already indexing them",
+    )
+
 
 class IndexStartedEvent(BaseModel):
     """Opens the stream with the run's scope."""

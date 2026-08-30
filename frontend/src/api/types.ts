@@ -62,6 +62,13 @@ export interface SourceStatus {
   indexed: IndexedDocument | null
   /** Plain-language reason for the verdict, written by the backend. */
   detail: string
+  /**
+   * Whether a run is embedding this file right now.
+   *
+   * Orthogonal to `state`, which describes what is stored — a file reads
+   * `not_indexed` while its very first embeddings are still being built.
+   */
+  indexing: boolean
 }
 
 /** One indexed chunk, as stored in the vector index. */
@@ -90,6 +97,8 @@ export interface UploadResponse {
   status: SourceStatus
   /** Whether this overwrote an existing file rather than creating one. */
   replaced: boolean
+  /** False when identical content was already stored, making the upload a no-op. */
+  created: boolean
   /** Vectors discarded because the content they described was replaced. */
   pruned: number
 }
@@ -117,6 +126,8 @@ export interface IndexStartedEventData {
   keys: string[]
   total: number
   embedding_model: string
+  /** Keys skipped because another run is already embedding them. */
+  busy: string[]
 }
 
 export interface IndexProgressEventData {

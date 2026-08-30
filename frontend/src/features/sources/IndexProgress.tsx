@@ -14,6 +14,8 @@ interface IndexProgressProps {
   running: boolean
   progress: RunProgress | null
   queued: string[]
+  /** Keys another run was already embedding, so this one left them alone. */
+  busy: string[]
   failures: RunFailure[]
   summary: IndexSummaryEventData | null
   error: string | null
@@ -33,6 +35,7 @@ export function IndexProgress({
   running,
   progress,
   queued,
+  busy,
   failures,
   summary,
   error,
@@ -40,7 +43,9 @@ export function IndexProgress({
   onDismiss,
 }: IndexProgressProps) {
   // Nothing has happened yet and nothing is left over — render nothing.
-  if (!running && !summary && !error && failures.length === 0) return null
+  if (!running && !summary && !error && failures.length === 0 && busy.length === 0) {
+    return null
+  }
 
   const total = progress?.totalFiles || queued.length
   // Before the first progress event there is no file number to report.
@@ -108,6 +113,13 @@ export function IndexProgress({
       ) : null}
 
       {error ? <p className="mt-3 text-xs text-state-orphaned">{error}</p> : null}
+
+      {busy.length > 0 ? (
+        <p className="mt-3 text-xs text-slate-500">
+          Already being indexed by another run, so left alone:{' '}
+          <span className="font-mono">{busy.join(', ')}</span>
+        </p>
+      ) : null}
 
       {failures.length > 0 ? (
         <ul className="mt-3 space-y-1">

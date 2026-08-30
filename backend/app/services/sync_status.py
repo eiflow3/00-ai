@@ -20,7 +20,7 @@ from app.schemas.source import (
     SourceObject,
     SourceStatus,
 )
-from app.services import index_catalog
+from app.services import index_catalog, index_registry
 from app.services.object_store import head_object, list_objects
 from app.services.text_extraction import is_supported
 
@@ -114,6 +114,9 @@ def build_status(
         source=source,
         indexed=indexed,
         detail=detail,
+        # What is stored says `state`; what is happening says this. A file can
+        # read `not_indexed` while a run is midway through embedding it.
+        indexing=index_registry.is_indexing(key),
     )
 
 

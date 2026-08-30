@@ -104,6 +104,10 @@ exists in storage, what the vector index holds for it, and a single verdict
 saying whether the embeddings need rebuilding.
 
 {_STATE_TABLE}
+The separate `indexing` flag says whether a run is embedding that file *right
+now*. It is orthogonal to `state`, which describes what is stored — a file can
+read `not_indexed` while its embeddings are being built.
+
 Files that exist only in the index — whose object has since been deleted —
 appear at the end of the list as `orphaned`, so nothing indexed is invisible.
 
@@ -136,9 +140,15 @@ stay separate so a batch of files can be added and then embedded in one pass.
 Only file types the pipeline can read are accepted; anything else is refused
 rather than stored, so the file list never fills with rows indexing will skip.
 
-Uploading to a key that already exists is refused with `409` — overwriting is
-what `PUT /sources/{source_key}` is for, and it has different consequences for
-the existing embeddings.
+Uploading the **same file** twice is not an error. The second call returns
+`200` with `created: false`, because a client whose connection dropped after the
+object was written has no way to know it succeeded — a retry should reach the
+state it asked for, not an error about its own earlier attempt. A first upload
+returns `201`.
+
+Uploading **different** content to a key that is already taken is refused with
+`409`. Overwriting is what `PUT /sources/{source_key}` is for, and it has
+different consequences for the existing embeddings.
 """
 
 REPLACE_DESCRIPTION = """\
@@ -172,12 +182,13 @@ UPLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
         },
     },
     409: {
-        "description": "A file already exists at that key. Replace it instead.",
+        "description": "Different content already exists at that key. Replace it "
+        "instead. Re-uploading identical content returns 200, not this.",
         "content": {
             "application/json": {
                 "example": {
-                    "detail": "A file already exists at 'policy.md'. Replace it "
-                    "instead of uploading over it."
+                    "detail": "A different file already exists at 'policy.md'. "
+                    "Replace it instead of uploading over it."
                 }
             }
         },
@@ -200,7 +211,7 @@ A `text/event-stream` reporting the run's progress. Events arrive in this order:
 
 | Event | Occurrences | Payload |
 | --- | --- | --- |
-| `started` | exactly 1, always first | Which files the run will process, and with which model. |
+| `started` | exactly 1, always first | Which files the run will process, with which model, and which were skipped as already running. |
 | `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `chunking`, `embedding`, `upserting`. |
 | `completed` | 0 or 1 per file | That file's chunk count, and how many stale chunks were pruned. |
 | `error` | 0 or more | One file failing. The run continues. |
@@ -210,6 +221,11 @@ A `text/event-stream` reporting the run's progress. Events arrive in this order:
 
 * `started` always arrives first and names every file in the run, so a client
   can size a progress bar before any work happens.
+* A file another run is already embedding is left to that run and listed in
+  `started.busy` rather than processed twice. Two runs on one file interleave
+  their writes into an index matching neither version, so the second yields.
+  Files reported this way are not counted in `total` and produce no further
+  events.
 * `error` is non-fatal and scoped to one file: an unreadable upload or a failed
   embedding call does not abort the remaining files. Failures that occur before
   the stream opens are returned as an HTTP error status instead, never as an

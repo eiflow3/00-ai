@@ -10,7 +10,7 @@ app.services.
 import json
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -118,19 +118,20 @@ async def index_sources(body: IndexRequest):
 @router.post(
     "/upload",
     response_model=UploadResponse,
-    status_code=201,
     summary="Upload a new source file",
     response_description="The stored file's state, ready to be indexed.",
     description=UPLOAD_DESCRIPTION,
     responses=UPLOAD_RESPONSES,
 )
 async def upload_source(
+    response: Response,
     file: UploadFile = File(..., description="The file to store"),
     prefix: str = Form(default="", description="Folder to place the file under"),
 ) -> UploadResponse:
     """Store a new file in object storage, leaving it unindexed.
 
     Args:
+        response: Used to distinguish a created file from one already stored.
         file: The uploaded file.
         prefix: Folder to place it under, if any.
 
@@ -138,19 +139,26 @@ async def upload_source(
         The file's state after the write.
 
     Raises:
-        HTTPException: 400 if the file is unacceptable, 409 if the key is taken.
+        HTTPException: 400 if the file is unacceptable, 409 if the key holds
+            different content.
     """
     data = await file.read()
 
     try:
-        stored = await uploads.upload_new(file.filename or "", data, prefix)
+        stored, created = await uploads.upload_new(file.filename or "", data, prefix)
     except UploadRejected as exc:
-        # A taken key is a conflict, not a malformed request — the client's
-        # recourse is to replace instead, which is a different endpoint.
+        # A name taken by *different* content is a conflict, not a malformed
+        # request — the client's recourse is to replace, a different endpoint.
         status_code = 409 if "already exists" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc))
 
-    return UploadResponse(status=await sync_status.get_status(stored.key))
+    # 201 for a file this call created, 200 for one that was already there —
+    # so a retry of a request whose response was lost still reads as success.
+    response.status_code = 201 if created else 200
+
+    return UploadResponse(
+        status=await sync_status.get_status(stored.key), created=created
+    )
 
 
 @router.put(

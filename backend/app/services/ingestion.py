@@ -37,7 +37,7 @@ from app.schemas.ingestion import (
     IndexSummaryEventData,
 )
 from app.schemas.source import IndexState, SourceObject, SourceStatus
-from app.services import index_catalog, sync_status
+from app.services import index_catalog, index_registry, sync_status
 from app.services.chunker import chunk_document
 from app.services.embeddings import embed_texts
 from app.services.object_store import get_object, head_object
@@ -181,25 +181,49 @@ async def run(request: IndexRequest) -> AsyncIterator[object]:
         sources = [status.source for status in statuses if status.source]
         missing = []
 
-    yield IndexStartedEvent(
-        data=IndexStartedEventData(
-            keys=[source.key for source in sources],
-            total=len(sources),
-            embedding_model=request.embedding_model,
-        )
-    )
+    # Claim the files before announcing them. Two runs on one file interleave
+    # their upserts and prunes into an index matching neither version, so a key
+    # another run already holds is left to that run rather than raced for.
+    claimed, busy = await index_registry.claim([source.key for source in sources])
 
-    # Keys the caller named that are not in the bucket: reported up front so
-    # the run's totals still add up.
-    for key in missing:
-        yield IndexErrorEvent(
-            data=IndexErrorEventData(
-                source_key=key,
-                stage="loading",
-                message="No object at this key in storage.",
+    # Everything past the claim is guarded, so a client disconnecting at any
+    # point — which cancels this generator — still gives the keys back.
+    try:
+        claimed_set = set(claimed)
+        sources = [source for source in sources if source.key in claimed_set]
+
+        yield IndexStartedEvent(
+            data=IndexStartedEventData(
+                keys=[source.key for source in sources],
+                total=len(sources),
+                embedding_model=request.embedding_model,
+                busy=busy,
             )
         )
 
+        # Keys the caller named that are not in the bucket: reported up front
+        # so the run's totals still add up.
+        for key in missing:
+            yield IndexErrorEvent(
+                data=IndexErrorEventData(
+                    source_key=key,
+                    stage="loading",
+                    message="No object at this key in storage.",
+                )
+            )
+
+        async for event in _process(request, sources, missing):
+            yield event
+    finally:
+        await index_registry.release(claimed)
+
+
+async def _process(
+    request: IndexRequest,
+    sources: list[SourceObject],
+    missing: list[str],
+) -> AsyncIterator[object]:
+    """Embed each selected file, yielding progress and a closing summary."""
     # Keys that were named but missing already count against the run.
     indexed = skipped = 0
     failed = len(missing)

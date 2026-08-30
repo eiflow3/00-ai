@@ -39,6 +39,8 @@ export interface UseIndexRunResult {
   progress: RunProgress | null
   /** Keys the run said it would process, known from the `started` event. */
   queued: string[]
+  /** Keys another run was already embedding, so this one left them alone. */
+  busy: string[]
   /** Files finished so far, successfully or as a skip. */
   finished: string[]
   failures: RunFailure[]
@@ -59,6 +61,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
   const [running, setRunning] = useState(false)
   const [progress, setProgress] = useState<RunProgress | null>(null)
   const [queued, setQueued] = useState<string[]>([])
+  const [busy, setBusy] = useState<string[]>([])
   const [finished, setFinished] = useState<string[]>([])
   const [failures, setFailures] = useState<RunFailure[]>([])
   const [summary, setSummary] = useState<IndexSummaryEventData | null>(null)
@@ -76,6 +79,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
       setRunning(true)
       setProgress(null)
       setQueued([])
+      setBusy([])
       setFinished([])
       setFailures([])
       setSummary(null)
@@ -86,6 +90,8 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
           switch (event.event) {
             case 'started':
               setQueued(event.data.keys)
+              // Not an error: those files are being embedded by another run.
+              setBusy(event.data.busy)
               break
 
             case 'progress':
@@ -139,8 +145,21 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
     setFailures([])
     setFinished([])
     setQueued([])
+    setBusy([])
     setError(null)
   }, [])
 
-  return { running, progress, queued, finished, failures, summary, error, start, cancel, reset }
+  return {
+    running,
+    progress,
+    queued,
+    busy,
+    finished,
+    failures,
+    summary,
+    error,
+    start,
+    cancel,
+    reset,
+  }
 }

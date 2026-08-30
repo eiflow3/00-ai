@@ -13,6 +13,7 @@ Only file types the pipeline can actually read are accepted, so the file list
 never fills with rows that indexing will always skip.
 """
 
+import hashlib
 from pathlib import PurePosixPath
 
 from app.config import settings
@@ -89,17 +90,46 @@ def validate(key: str, data: bytes) -> None:
         raise UploadRejected(f"The file is larger than the {limit_mb:.0f} MB limit.")
 
 
-async def exists(key: str) -> bool:
-    """Whether an object already occupies this key."""
+async def find(key: str) -> SourceObject | None:
+    """Return the object at this key, or None if nothing is there."""
     try:
-        await head_object(key)
+        return await head_object(key)
     except FileNotFoundError:
+        return None
+
+
+def is_same_content(stored: SourceObject, data: bytes) -> bool:
+    """Whether the stored object already holds exactly these bytes.
+
+    A single-part upload's etag is the MD5 of its contents, so comparing it
+    against the incoming bytes identifies a repeat of an upload that already
+    succeeded. An object written as a multipart upload — anything put here
+    through the storage provider's own console, for instance — carries a
+    "-<parts>" suffix instead and will not match, so those fall through to
+    being treated as a genuine conflict rather than being wrongly merged.
+
+    Args:
+        stored: The object currently at the key.
+        data: The bytes being uploaded.
+
+    Returns:
+        True only when the stored object is provably the same content.
+    """
+    if not stored.etag or "-" in stored.etag:
         return False
-    return True
+
+    return hashlib.md5(data).hexdigest() == stored.etag
 
 
-async def upload_new(filename: str, data: bytes, prefix: str = "") -> SourceObject:
-    """Store a file at a key that must not already be taken.
+async def upload_new(
+    filename: str, data: bytes, prefix: str = ""
+) -> tuple[SourceObject, bool]:
+    """Store a file at a key that must not already hold different content.
+
+    Uploading the identical file twice is treated as the same upload, not a
+    conflict: a client whose connection dropped after the object was written
+    has no way to know it succeeded, and retrying should reach the state it
+    asked for rather than an error about its own earlier attempt.
 
     Args:
         filename: The name the browser reported for the file.
@@ -107,22 +137,30 @@ async def upload_new(filename: str, data: bytes, prefix: str = "") -> SourceObje
         prefix: Folder to place it under, if any.
 
     Returns:
-        The stored object.
+        The stored object, and whether this call created it.
 
     Raises:
-        UploadRejected: If the file is unacceptable, or the key is taken.
+        UploadRejected: If the file is unacceptable, or the key holds different
+            content — which is a real collision, and needs a replace.
     """
     key = normalise_key(filename, prefix)
     validate(key, data)
 
-    # Refuse rather than overwrite: replacing a file is a separate, explicit
-    # action, because it also discards that file's embeddings.
-    if await exists(key):
+    stored = await find(key)
+    if stored is not None:
+        # The same bytes are already there, so the caller's intent is met.
+        if is_same_content(stored, data):
+            return stored, False
+
+        # Different content under a taken name is a genuine collision.
+        # Overwriting is a separate, explicit action because it also discards
+        # that file's embeddings.
         raise UploadRejected(
-            f"A file already exists at {key!r}. Replace it instead of uploading over it."
+            f"A different file already exists at {key!r}. "
+            f"Replace it instead of uploading over it."
         )
 
-    return await put_object(key, data, DEFAULT_CONTENT_TYPE)
+    return await put_object(key, data, DEFAULT_CONTENT_TYPE), True
 
 
 async def replace(

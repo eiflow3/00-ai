@@ -18,7 +18,7 @@ import { Spinner } from '../../components/Spinner'
 interface SourceRowProps {
   status: SourceStatus
   expanded: boolean
-  /** True while an indexing run is processing this particular file. */
+  /** True while a run — this session's or another's — is embedding this file. */
   busy: boolean
   /** Disabled while any run is in flight, to keep runs from interleaving. */
   actionsDisabled: boolean
@@ -53,10 +53,12 @@ export function SourceRow({
 
   // Only a file that still exists in storage can be indexed; an orphan's
   // resolution is deleting its vectors instead.
-  const canReindex = source !== null && needsReindex(state)
-  const canDeindex = indexed !== null
+  // A run already embedding this file makes a second request pointless: the
+  // server would refuse it anyway rather than let two runs interleave.
+  const canReindex = source !== null && needsReindex(state) && !busy
+  const canDeindex = indexed !== null && !busy
   // An orphan has no file left to replace — only vectors to remove.
-  const canReplace = source !== null
+  const canReplace = source !== null && !busy
 
   return (
     <>
@@ -95,10 +97,7 @@ export function SourceRow({
         </td>
 
         <td className="px-3 py-3">
-          <span className="flex items-center gap-2">
-            <StateBadge state={state} detail={status.detail} />
-            {busy ? <Spinner /> : null}
-          </span>
+          <StateBadge state={state} detail={status.detail} />
         </td>
 
         <td className="py-3 pr-4 pl-3 text-right whitespace-nowrap">
@@ -126,7 +125,12 @@ export function SourceRow({
               </button>
             </>
           ) : null}
-          {canReindex ? (
+          {busy ? (
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-400">
+              <Spinner />
+              Indexing
+            </span>
+          ) : canReindex ? (
             <button
               type="button"
               onClick={onReindex}

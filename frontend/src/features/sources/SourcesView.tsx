@@ -6,7 +6,7 @@
  * the comparison came out.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { IndexProgress } from './IndexProgress'
 import { SourceRow } from './SourceRow'
@@ -31,6 +31,9 @@ const FILTERS: { value: IndexState | 'all'; label: string }[] = [
   { value: 'orphaned', label: 'Orphaned' },
 ]
 
+/** How often to re-read the list while some file is being embedded elsewhere. */
+const INDEXING_POLL_MS = 3000
+
 /** A replace waiting on the user, because the chosen file has a different name. */
 interface PendingReplace {
   sourceKey: string
@@ -54,8 +57,21 @@ export function SourcesView() {
   // A new file is not in the table yet, so re-read rather than merging it in.
   const upload = useUpload(refresh)
 
+  // A run started elsewhere — another tab, another session — only shows up on
+  // a re-read, so poll while one is in flight rather than leaving the row
+  // stuck on "Indexing" until someone presses Refresh.
+  const watching = sources.some((status) => status.indexing)
+
+  useEffect(() => {
+    if (!watching) return
+
+    const timer = setInterval(refresh, INDEXING_POLL_MS)
+    return () => clearInterval(timer)
+  }, [watching, refresh])
+
+  // Files worth indexing: stale, and not already being embedded elsewhere.
   const staleCount = useMemo(
-    () => sources.filter((status) => needsReindex(status.state)).length,
+    () => sources.filter((status) => needsReindex(status.state) && !status.indexing).length,
     [sources],
   )
 
@@ -161,6 +177,7 @@ export function SourcesView() {
         running={run.running}
         progress={run.progress}
         queued={run.queued}
+        busy={run.busy}
         failures={run.failures}
         summary={run.summary}
         error={run.error}
@@ -211,7 +228,9 @@ export function SourcesView() {
                   key={status.source_key}
                   status={status}
                   expanded={expanded === status.source_key}
-                  busy={run.progress?.sourceKey === status.source_key}
+                  // Either this session is on that file, or the server says
+                  // some other run is — both mean "leave it alone".
+                  busy={run.progress?.sourceKey === status.source_key || status.indexing}
                   actionsDisabled={run.running}
                   onToggle={() => toggle(status.source_key)}
                   onReindex={() => run.start({ keys: [status.source_key] })}

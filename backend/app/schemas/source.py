@@ -134,6 +134,12 @@ class SourceStatus(BaseModel):
     # reimplement the comparison rules to explain them.
     detail: str = Field(default="", description="Why this file is in this state")
 
+    # Whether a run is embedding this file right now. Distinct from `state`,
+    # which describes what is stored — this describes what is happening.
+    indexing: bool = Field(
+        default=False, description="True while a run is embedding this file"
+    )
+
     @property
     def needs_reindex(self) -> bool:
         """Whether re-running the pipeline on this file would change anything."""
@@ -200,6 +206,13 @@ class UploadResponse(BaseModel):
     # Whether this overwrote an existing file rather than creating one.
     replaced: bool = Field(
         default=False, description="True when this overwrote an existing file"
+    )
+
+    # Whether this call is what put the object there. False when an identical
+    # file was already stored, which makes a repeated upload a no-op rather
+    # than a conflict.
+    created: bool = Field(
+        default=True, description="False when identical content was already stored"
     )
 
     # Vectors discarded because the file they described was replaced.
