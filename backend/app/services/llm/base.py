@@ -24,14 +24,17 @@ class BaseLLMAdapter(ABC):
         self,
         messages: list[dict],
         model: str,
-        temperature: float = 0.3,
+        temperature: float = 1.0,
     ) -> AsyncGenerator[str, None]:
         """Stream text deltas from the LLM.
 
         Args:
             messages: A list of message dicts with "role" and "content" keys.
-            model: The model name to use (e.g. "gpt-5.6-terra", "claude-sonnet-5-latest").
-            temperature: Sampling temperature (0 = deterministic, higher = creative).
+            model: The model name to use (e.g. "gpt-5.6-terra", "claude-sonnet-5").
+            temperature: Sampling temperature. Defaults to 1.0 because current
+                models on both providers reject anything else — OpenAI's reject
+                a non-default value outright, and Anthropic's no longer take
+                the parameter at all. Adapters may ignore it.
 
         Yields:
             Individual text chunks/deltas as they arrive from the LLM.

@@ -9,18 +9,31 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 
 import { Citations } from './Citations'
+import { ModelPicker } from './ModelPicker'
 import { UsageBar } from './UsageBar'
+import type { ModelOption } from '../../api/types'
 import { EmptyState } from '../../components/EmptyState'
 import { Spinner } from '../../components/Spinner'
 import { useChat } from '../../hooks/useChat'
+import { useModels } from '../../hooks/useModels'
 
 export function ChatView() {
   const [draft, setDraft] = useState('')
+  // The user's explicit pick, if they have made one. The option in use is
+  // derived from it rather than stored, so the default falls into place as
+  // soon as the catalog arrives without an effect writing state.
+  const [picked, setPicked] = useState<string | null>(null)
   const chat = useChat()
+  const models = useModels()
+
+  const model: ModelOption | null =
+    models.options.find((option) => option.model === picked && option.available) ??
+    models.options.find((option) => option.available) ??
+    null
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
-    void chat.ask(draft)
+    void chat.ask(draft, model ? { provider: model.provider, model: model.model } : undefined)
   }
 
   const hasAnswered = chat.question !== ''
@@ -33,6 +46,19 @@ export function ChatView() {
           Answered from the chunks embedded in the vector index.
         </p>
       </header>
+
+      <ModelPicker
+        options={models.options}
+        selected={model?.model ?? null}
+        onSelect={(option) => setPicked(option.model)}
+        disabled={chat.streaming}
+      />
+
+      {models.error ? (
+        <p className="mb-4 text-xs text-state-stale">
+          Could not load the model list — {models.error}
+        </p>
+      ) : null}
 
       <form onSubmit={handleSubmit} className="mb-6 flex gap-2">
         <input
@@ -69,6 +95,12 @@ export function ChatView() {
       {chat.warning ? (
         <p className="mb-4 rounded-lg border border-state-stale-soft bg-state-stale-soft px-4 py-3 text-sm text-state-stale">
           Retrieval failed, so this answer is ungrounded — {chat.warning}
+        </p>
+      ) : null}
+
+      {chat.failure ? (
+        <p className="mb-4 rounded-lg border border-state-orphaned-soft bg-state-orphaned-soft px-4 py-3 text-sm text-state-orphaned">
+          {model?.provider_label ?? 'The model'} could not answer — {chat.failure}
         </p>
       ) : null}
 

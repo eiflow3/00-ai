@@ -214,6 +214,25 @@ export interface UsageEventData {
   total_cost: number
 }
 
+/**
+ * One provider/model pair this deployment offers.
+ *
+ * The selector is built from these rather than a hardcoded list: which
+ * providers work depends on the credentials the backend has.
+ */
+export interface ModelOption {
+  provider: 'openai' | 'claude'
+  provider_label: string
+  model: string
+  model_label: string
+  /** False when this deployment cannot use it at all. */
+  available: boolean
+  /** A caveat worth showing even when the option is usable. */
+  detail: string
+  /** False when the model answers but reports zero cost. */
+  priced: boolean
+}
+
 export interface ChatRequest {
   query: string
   provider?: 'openai' | 'claude'

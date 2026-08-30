@@ -7,6 +7,13 @@ from anthropic import AsyncAnthropic
 from app.config import settings
 from app.services.llm.base import BaseLLMAdapter
 
+# Upper bound on a single response. Anthropic requires this to be set; it caps
+# the answer rather than reserving anything, so a generous value is free.
+MAX_OUTPUT_TOKENS = 4096
+
+# Header naming the workspace an identity-linked API key acts in.
+WORKSPACE_HEADER = "anthropic-workspace-id"
+
 
 class ClaudeAdapter(BaseLLMAdapter):
     """Adapter that streams responses from Anthropic's messages API.
@@ -19,13 +26,26 @@ class ClaudeAdapter(BaseLLMAdapter):
         super().__init__()
         # Create the async client once per adapter instance.
         # The API key is pulled from our central config.
-        self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        #
+        # An identity-linked key — one issued to a person rather than to a
+        # workspace — is rejected outright unless the request names the
+        # workspace it acts in. Sent as a default header so every call carries
+        # it; omitted entirely when unset, since an organisation key rejects
+        # the header as unexpected.
+        headers = (
+            {WORKSPACE_HEADER: settings.anthropic_workspace_id}
+            if settings.anthropic_workspace_id
+            else None
+        )
+        self.client = AsyncAnthropic(
+            api_key=settings.anthropic_api_key, default_headers=headers
+        )
 
     async def stream(
         self,
         messages: list[dict],
-        model: str = "claude-sonnet-5-latest",
-        temperature: float = 0.3,
+        model: str = "claude-sonnet-5",
+        temperature: float = 1.0,
     ) -> AsyncGenerator[str, None]:
         """Stream text deltas from Anthropic's messages endpoint.
 
@@ -34,6 +54,10 @@ class ClaudeAdapter(BaseLLMAdapter):
           not as a message with role "system".
         - Streamed events have types like "content_block_delta" that carry
           the incremental text.
+        - `temperature` is not a parameter of this API. Anthropic replaced it
+          with `output_config`, so the argument is accepted to satisfy the
+          adapter contract and then ignored rather than passed through, which
+          the SDK rejects outright.
         After streaming, populates self.usage with token counts.
         """
         # Anthropic requires the system prompt to be separate from the
@@ -52,12 +76,12 @@ class ClaudeAdapter(BaseLLMAdapter):
         # Join multiple system blocks in the order they were supplied.
         system_prompt = "\n\n".join(system_parts)
 
-        # Build the keyword arguments for the API call.
+        # Build the keyword arguments for the API call. Note the absence of
+        # temperature — see the docstring.
         kwargs = {
             "model": model,
             "messages": filtered_messages,
-            "temperature": temperature,
-            "max_tokens": 4096,
+            "max_tokens": MAX_OUTPUT_TOKENS,
         }
         # Only include system if we actually have a system prompt.
         if system_prompt:

@@ -12,9 +12,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from app.docs.chat import CHAT_DESCRIPTION, CHAT_RESPONSES
+from app.docs.chat import CHAT_DESCRIPTION, CHAT_MODELS_DESCRIPTION, CHAT_RESPONSES
 from app.schemas.chat import (
     ChatRequest,
+    ModelOption,
     ChatStreamErrorEvent,
     ChatStreamRetrievalEvent,
     ChatStreamUsageEvent,
@@ -24,18 +25,13 @@ from app.schemas.chat import (
 from app.schemas.retrieval import RetrievalResult
 from app.services.cost_tracker import calculate_cost
 from app.services.llm import get_adapter
+from app.services.llm.catalog import DEFAULT_MODELS, list_models
 from app.services.prompt_builder import build_messages
 from app.services.retrieval import retrieve
 
 router = APIRouter()
 
-# Default model per provider, used when the client doesn't specify one.
-_DEFAULT_MODELS = {
-    "openai": "gpt-5.6-terra",
-    "claude": "claude-sonnet-5-latest",
-}
-
-# Fallback when a provider has no entry above.
+# Fallback when a provider has no default in the catalog.
 _FALLBACK_MODEL = "gpt-5.6-terra"
 
 
@@ -54,6 +50,23 @@ def _sse(event: ChatStreamRetrievalEvent | ChatStreamErrorEvent | ChatStreamUsag
         else json.dumps(payload.to_dict())
     )
     return {"event": event.event, "data": data}
+
+
+@router.get(
+    "/chat/models",
+    response_model=list[ModelOption],
+    summary="List the providers and models this deployment offers",
+    response_description="Every provider/model pair, and whether it is usable here.",
+    description=CHAT_MODELS_DESCRIPTION,
+)
+def chat_models() -> list[ModelOption]:
+    """List the provider/model pairs a client may choose between.
+
+    Returns:
+        One entry per pair, carrying display labels, whether this deployment
+        has the credentials for it, and any caveat worth showing.
+    """
+    return [ModelOption(**entry) for entry in list_models()]
 
 
 @router.post(
@@ -79,7 +92,7 @@ async def chat(body: ChatRequest):
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Resolve the model — use the client's override or fall back to the default.
-    model = body.model or _DEFAULT_MODELS.get(body.provider, _FALLBACK_MODEL)
+    model = body.model or DEFAULT_MODELS.get(body.provider, _FALLBACK_MODEL)
 
     async def event_generator() -> AsyncIterator[dict]:
         """Yield the retrieval event, the text deltas, then the usage event."""
@@ -126,10 +139,19 @@ async def chat(body: ChatRequest):
             system_prompt=body.system_prompt,
         )
 
-        # Stream text deltas from the LLM adapter.
-        async for token in adapter.stream(messages, model, body.temperature):
-            # Each yield sends a "data: <token>\n\n" SSE event to the client.
-            yield {"data": token}
+        # Stream text deltas from the LLM adapter. The response status was
+        # sent when the stream opened, so a provider failure here cannot become
+        # an HTTP error — it has to be an event, or the connection just dies
+        # mid-answer with nothing explaining why.
+        try:
+            async for token in adapter.stream(messages, model, body.temperature):
+                # Each yield sends a "data: <token>\n\n" SSE event to the client.
+                yield {"data": token}
+        except Exception as exc:
+            yield _sse(ChatStreamErrorEvent(
+                data=ErrorEventData(stage="generation", message=str(exc))
+            ))
+            return
 
         # After streaming completes, calculate and send cost breakdown.
         # The adapter populates self.usage with token counts after the stream.

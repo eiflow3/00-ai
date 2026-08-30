@@ -12,6 +12,11 @@ _ADAPTERS: dict[str, type[BaseLLMAdapter]] = {
 }
 
 
+def supported_providers() -> list[str]:
+    """List the provider keys the registry knows, in registration order."""
+    return list(_ADAPTERS)
+
+
 def get_adapter(provider: str) -> BaseLLMAdapter:
     """Return an instantiated adapter for the given provider name.
 

@@ -28,7 +28,7 @@ class ChatRequest(BaseModel):
     # The specific model name to use (defaults differ per provider).
     model: Optional[str] = Field(
         default=None,
-        description="Model name override (e.g. 'gpt-5.6-terra', 'claude-sonnet-5-latest')",
+        description="Model name override (e.g. 'gpt-5.6-terra', 'claude-sonnet-5')",
     )
 
     # Optional system prompt to steer the LLM's behaviour.
@@ -39,10 +39,14 @@ class ChatRequest(BaseModel):
 
     # Sampling temperature for the LLM.
     temperature: float = Field(
-        default=0.3,
+        default=1.0,
         ge=0.0,
         le=2.0,
-        description="Sampling temperature (0 = deterministic, higher = creative)",
+        description=(
+            "Sampling temperature. The default is 1.0 because the current "
+            "models reject anything else: OpenAI's refuse a non-default value, "
+            "and Anthropic's no longer accept the parameter at all."
+        ),
     )
 
     # Optional context chunks from the retrieval phase.
@@ -83,6 +87,40 @@ class ChatRequest(BaseModel):
     embedding_model: str = Field(
         default=DEFAULT_EMBEDDING_MODEL,
         description="Embedding model used to embed the query for retrieval",
+    )
+
+
+class ModelOption(BaseModel):
+    """One provider/model pair this deployment offers.
+
+    Returned so a client renders a selector from what is actually configured
+    here, rather than from a hardcoded list that drifts out of date.
+    """
+
+    # Provider key to send back as `provider` on a chat request.
+    provider: str = Field(..., description="Provider key for the chat request")
+
+    # Display name for the provider.
+    provider_label: str = Field(..., description="Human-readable provider name")
+
+    # Model id to send back as `model` on a chat request.
+    model: str = Field(..., description="Model id for the chat request")
+
+    # Display name for the model.
+    model_label: str = Field(..., description="Human-readable model name")
+
+    # Whether this deployment has the credentials to use it.
+    available: bool = Field(
+        default=True, description="Whether this option can be used here"
+    )
+
+    # What is missing or uncertain, written for a person to act on.
+    detail: str = Field(default="", description="Any caveat about using this option")
+
+    # Whether the cost tracker knows this model's prices. An unpriced model
+    # still answers, but reports zero cost.
+    priced: bool = Field(
+        default=True, description="False when cost for this model reports as zero"
     )
 
 

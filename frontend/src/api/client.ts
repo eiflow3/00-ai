@@ -14,6 +14,7 @@ import type {
   IndexEvent,
   IndexRequest,
   IndexState,
+  ModelOption,
   SourceDetail,
   SourceStatus,
   UploadResponse,
@@ -21,15 +22,6 @@ import type {
 
 /** Backend origin. Overridden per environment; the default matches `npm run app:api`. */
 const BASE_URL = import.meta.env?.VITE_API_BASE_URL ?? 'http://localhost:8000'
-
-/**
- * The configured model rejects any temperature but 1.
- *
- * The endpoint's own default of 0.3 therefore fails outright. Pinned here so
- * the chat screen works, rather than changing the backend's default from the
- * client side — see the note in the project plan.
- */
-const SUPPORTED_TEMPERATURE = 1
 
 /** An error carrying the backend's own `detail` message where one was sent. */
 export class ApiError extends Error {
@@ -171,6 +163,16 @@ export async function* indexSources(
 }
 
 /**
+ * List the provider and model pairs this deployment can use.
+ *
+ * The selector is built from this rather than a hardcoded list, because which
+ * providers work depends on the credentials the backend holds.
+ */
+export function listModels(signal?: AbortSignal): Promise<ModelOption[]> {
+  return request<ModelOption[]>(url('/chat/models'), { signal })
+}
+
+/**
  * Ask a question, yielding retrieval, text and usage events as they arrive.
  *
  * Text deltas come through unnamed — SSE's default `message` type — so they
@@ -180,9 +182,7 @@ export async function* streamChat(
   body: ChatRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<ChatEvent> {
-  const payload: ChatRequest = { temperature: SUPPORTED_TEMPERATURE, ...body }
-
-  for await (const raw of postSse(url('/chat'), payload, signal)) {
+  for await (const raw of postSse(url('/chat'), body, signal)) {
     if (raw.event === 'message') {
       yield { event: 'message', data: raw.data }
     } else {

@@ -67,6 +67,16 @@ class Settings(BaseSettings):
             and self.r2_secret_access_key
         )
 
+    # Workspace an identity-linked Anthropic key acts in.  Keys issued to a
+    # person rather than a workspace are rejected without it, so Claude stays
+    # unavailable until this is set.  Organisation-level keys ignore it.
+    anthropic_workspace_id: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ANTHROPIC_WORKSPACE_ID", "anthropic_workspace_id"
+        ),
+    )
+
     # Anthropic (Claude) — same AliasChoices pattern to read ANTHROPIC_API_KEY
     # directly from env, bypassing the APP_ prefix.
     anthropic_api_key: str = Field(

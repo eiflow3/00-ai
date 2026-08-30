@@ -9,7 +9,7 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { streamChat } from '../api/client'
-import type { RetrievedChunk, UsageEventData } from '../api/types'
+import type { ChatRequest, RetrievedChunk, UsageEventData } from '../api/types'
 
 export interface UseChatResult {
   /** The question the current answer belongs to. */
@@ -25,9 +25,12 @@ export interface UseChatResult {
   retrieved: boolean
   /** A degraded stage — the answer still streams, just ungrounded. */
   warning: string | null
+  /** The provider refused or failed, so there is no answer at all. */
+  failure: string | null
   /** A failure that prevented an answer entirely. */
   error: string | null
-  ask: (query: string) => Promise<void>
+  /** Ask a question, optionally naming which provider and model should answer. */
+  ask: (query: string, options?: Pick<ChatRequest, 'provider' | 'model'>) => Promise<void>
   cancel: () => void
 }
 
@@ -39,11 +42,15 @@ export function useChat(): UseChatResult {
   const [streaming, setStreaming] = useState(false)
   const [retrieved, setRetrieved] = useState(false)
   const [warning, setWarning] = useState<string | null>(null)
+  const [failure, setFailure] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const controller = useRef<AbortController | null>(null)
 
-  const ask = useCallback(async (query: string) => {
+  const ask = useCallback(async (
+    query: string,
+    options?: Pick<ChatRequest, 'provider' | 'model'>,
+  ) => {
     const trimmed = query.trim()
     if (!trimmed) return
 
@@ -58,11 +65,12 @@ export function useChat(): UseChatResult {
     setUsage(null)
     setRetrieved(false)
     setWarning(null)
+    setFailure(null)
     setError(null)
     setStreaming(true)
 
     try {
-      for await (const event of streamChat({ query: trimmed }, abort.signal)) {
+      for await (const event of streamChat({ query: trimmed, ...options }, abort.signal)) {
         switch (event.event) {
           case 'retrieval':
             setCitations(event.data.chunks)
@@ -75,8 +83,14 @@ export function useChat(): UseChatResult {
             break
 
           case 'error':
-            // Non-fatal: retrieval failed, so the answer is ungrounded.
-            setWarning(`${event.data.stage}: ${event.data.message}`)
+            // Retrieval failing is survivable — the answer streams ungrounded.
+            // Generation failing is not: there will be no answer at all, and
+            // the stream ends here. The two must not read the same on screen.
+            if (event.data.stage === 'generation') {
+              setFailure(event.data.message)
+            } else {
+              setWarning(`${event.data.stage}: ${event.data.message}`)
+            }
             break
 
           case 'usage':
@@ -107,6 +121,7 @@ export function useChat(): UseChatResult {
     streaming,
     retrieved,
     warning,
+    failure,
     error,
     ask,
     cancel,

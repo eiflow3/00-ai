@@ -52,13 +52,26 @@ def _build_event_schemas() -> tuple[dict[str, Any], dict[str, Any]]:
 _EVENT_UNION_SCHEMA, CHAT_COMPONENT_SCHEMAS = _build_event_schemas()
 
 
+CHAT_MODELS_DESCRIPTION = """\
+List the provider and model pairs this deployment can actually use.
+
+A client should build its model selector from this rather than a hardcoded
+list: which providers work depends on the credentials configured here, and a
+model missing from the pricing registry answers normally but reports zero cost.
+
+`available: false` means the option cannot be used at all. An available option
+may still carry a `detail` — a caveat that does not prevent use but is worth
+showing, such as a credential that only some account types require.
+"""
+
+
 # Prose contract: what a client can count on, and in what order.
 _STREAM_DESCRIPTION = """\
 A `text/event-stream` of SSE events. Emitted in this order:
 
 | Event | Occurrences | Payload |
 | --- | --- | --- |
-| `error` | 0 or 1, always first | Which pipeline stage failed, and why. |
+| `error` | 0 or more | Which pipeline stage failed, and why. |
 | `retrieval` | exactly 1 | The chunks that ground the answer, each with its similarity score. |
 | *(unnamed)* | 0 or more | One delta of answer text. Has no `event:` line, so it arrives as SSE's default `message` type. |
 | `usage` | 0 or 1, always last | Token counts and cost for the request. |
@@ -70,10 +83,12 @@ A `text/event-stream` of SSE events. Emitted in this order:
   is disabled or matched nothing — with an empty `chunks` list.
 * `chunks` are ordered by descending similarity score, already filtered by the
   request's `score_threshold`.
-* `error` is non-fatal and reports a degraded stage, not a failed request: on a
-  retrieval failure the answer still streams, ungrounded. Failures that occur
-  before the stream opens (such as an unsupported provider) are returned as an
-  HTTP error status instead, never as an event.
+* `error` reports which stage failed. A `retrieval` failure is non-fatal —
+  it arrives first and the answer still streams, ungrounded. A `generation`
+  failure ends the stream: the HTTP status was already sent when the stream
+  opened, so a provider rejecting the request can only be reported this way.
+  Failures that occur before the stream opens (such as an unsupported provider)
+  are returned as an HTTP error status instead, never as an event.
 * `usage` covers the generation call only — the embedding call made during
   retrieval is not priced into it. It is omitted entirely when the provider
   reports no usage data, so clients must not block on it.

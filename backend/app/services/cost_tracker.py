@@ -59,7 +59,7 @@ PRICING: dict[str, dict[str, float]] = {
     },
     # Anthropic Claude Sonnet 5 (permanent standard rate)
     # https://docs.anthropic.com/en/docs/about-claude/models
-    "claude-sonnet-5-latest": {
+    "claude-sonnet-5": {
         "input_per_1m": 2.00,
         "output_per_1m": 10.00,
         "cache_read_per_1m": 0.20,
