@@ -16,6 +16,7 @@ class ClaudeAdapter(BaseLLMAdapter):
     """
 
     def __init__(self):
+        super().__init__()
         # Create the async client once per adapter instance.
         # The API key is pulled from our central config.
         self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
@@ -23,7 +24,7 @@ class ClaudeAdapter(BaseLLMAdapter):
     async def stream(
         self,
         messages: list[dict],
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-5-latest",
         temperature: float = 0.3,
     ) -> AsyncGenerator[str, None]:
         """Stream text deltas from Anthropic's messages endpoint.
@@ -33,6 +34,7 @@ class ClaudeAdapter(BaseLLMAdapter):
           not as a message with role "system".
         - Streamed events have types like "content_block_delta" that carry
           the incremental text.
+        After streaming, populates self.usage with token counts.
         """
         # Anthropic requires the system prompt to be separate from the
         # messages list, so we extract it if present.
@@ -62,3 +64,19 @@ class ClaudeAdapter(BaseLLMAdapter):
             # what we need for our SSE response.
             async for text in stream.text_stream:
                 yield text
+
+            # After the stream finishes, get the final message to extract
+            # token usage. Anthropic natively reports cache tokens.
+            final_message = await stream.get_final_message()
+            self.usage = {
+                "input_tokens": final_message.usage.input_tokens or 0,
+                "output_tokens": final_message.usage.output_tokens or 0,
+                # Anthropic includes cache_read_input_tokens in its usage.
+                "cache_read_tokens": getattr(
+                    final_message.usage, "cache_read_input_tokens", 0
+                ) or 0,
+                # Anthropic includes cache_creation_input_tokens for writes.
+                "cache_write_tokens": getattr(
+                    final_message.usage, "cache_creation_input_tokens", 0
+                ) or 0,
+            }

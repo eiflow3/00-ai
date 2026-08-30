@@ -26,7 +26,7 @@ class ChatRequest(BaseModel):
     # The specific model name to use (defaults differ per provider).
     model: Optional[str] = Field(
         default=None,
-        description="Model name override (e.g. 'gpt-4o-mini', 'claude-sonnet-4-20250514')",
+        description="Model name override (e.g. 'gpt-5.6-terra', 'claude-sonnet-5-latest')",
     )
 
     # Optional system prompt to steer the LLM's behaviour.
