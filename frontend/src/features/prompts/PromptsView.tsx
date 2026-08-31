@@ -9,6 +9,12 @@
  * The editors and the assembled result sit on one screen deliberately. A chunk
  * format judged on its own tells you nothing about the request it produces once
  * it has been repeated once per retrieved chunk.
+ *
+ * Grouped, because these are no longer all one pipeline: the chat prompts decide
+ * how a question is answered, and the golden prompts decide how an evaluation
+ * set is drafted. Running them together invited the obvious mistake — editing a
+ * generator prompt and wondering why no answer changed. The assembled preview
+ * belongs to the chat group alone, since only those four become a request.
  */
 
 import { useState } from 'react'
@@ -18,9 +24,24 @@ import { PromptEditor } from './PromptEditor'
 import { EmptyState } from '../../components/EmptyState'
 import { Spinner } from '../../components/Spinner'
 import { usePromptPreview, usePrompts } from '../../hooks/usePrompts'
+import type { PromptGroup } from '../../api/types'
 
 /** Question the preview is rendered around. Any question would do. */
 const SAMPLE_QUERY = 'What was revenue in FY2025?'
+
+/** Heading and blurb for each group, in the order they are shown. */
+const GROUPS: { value: PromptGroup; title: string; hint: string }[] = [
+  {
+    value: 'chat',
+    title: 'Chat pipeline',
+    hint: 'Assembled into every question, in this order.',
+  },
+  {
+    value: 'golden',
+    title: 'Golden set generator',
+    hint: 'Used when drafting an evaluation set from a source file. One pass each.',
+  },
+]
 
 export function PromptsView() {
   const [chunkCount, setChunkCount] = useState(2)
@@ -70,27 +91,40 @@ export function PromptsView() {
         />
       ) : null}
 
-      {prompts.prompts.map((prompt) => (
-        <PromptEditor
-          key={prompt.id}
-          prompt={prompt}
-          saving={prompts.saving === prompt.id}
-          onSave={(template) => prompts.save(prompt.id, template)}
-          onReset={() => prompts.reset(prompt.id)}
-        />
-      ))}
+      {GROUPS.map((group) => {
+        const inGroup = prompts.prompts.filter((prompt) => prompt.group === group.value)
+        if (inGroup.length === 0) return null
 
-      {prompts.prompts.length > 0 ? (
-        <AssembledPrompt
-          preview={preview.preview}
-          loading={preview.loading}
-          error={preview.error}
-          chunkCount={chunkCount}
-          onChunkCount={setChunkCount}
-          grounded={grounded}
-          onGrounded={setGrounded}
-        />
-      ) : null}
+        return (
+          <section key={group.value} className="mb-8">
+            <h2 className="mb-1 text-sm font-semibold text-slate-900">{group.title}</h2>
+            <p className="mb-3 text-xs text-slate-500">{group.hint}</p>
+
+            {inGroup.map((prompt) => (
+              <PromptEditor
+                key={prompt.id}
+                prompt={prompt}
+                saving={prompts.saving === prompt.id}
+                onSave={(template) => prompts.save(prompt.id, template)}
+                onReset={() => prompts.reset(prompt.id)}
+              />
+            ))}
+
+            {/* Only the chat prompts become a request, so only they have one to show. */}
+            {group.value === 'chat' ? (
+              <AssembledPrompt
+                preview={preview.preview}
+                loading={preview.loading}
+                error={preview.error}
+                chunkCount={chunkCount}
+                onChunkCount={setChunkCount}
+                grounded={grounded}
+                onGrounded={setGrounded}
+              />
+            ) : null}
+          </section>
+        )
+      })}
     </div>
   )
 }

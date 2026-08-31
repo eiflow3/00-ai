@@ -1,25 +1,28 @@
 /**
  * Application shell.
  *
- * Four screens following the pipeline: Sources puts files into the index, Chat
+ * Five screens following the pipeline: Sources puts files into the index, Chat
  * asks questions of it, Evaluations is where those answers get judged against
- * the chunks that produced them, and Prompts is the wording every answer was
- * written under. Four screens do not justify a router.
+ * the chunks that produced them, Golden Sets is where the answer keys those
+ * scores are measured against get drafted and signed off, and Prompts is the
+ * wording all of it was written under. Five screens do not justify a router.
  */
 
 import { useState } from 'react'
 
 import { ChatView } from './features/chat/ChatView'
+import { GoldenView } from './features/golden/GoldenView'
 import { PromptsView } from './features/prompts/PromptsView'
 import { SourcesView } from './features/sources/SourcesView'
 import { TracesView } from './features/traces/TracesView'
 
-type Tab = 'sources' | 'chat' | 'evaluations' | 'prompts'
+type Tab = 'sources' | 'chat' | 'evaluations' | 'golden' | 'prompts'
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'sources', label: 'Sources' },
   { value: 'chat', label: 'Chat' },
   { value: 'evaluations', label: 'Evaluations' },
+  { value: 'golden', label: 'Golden Sets' },
   { value: 'prompts', label: 'Prompts' },
 ]
 
@@ -52,6 +55,7 @@ function App() {
         {tab === 'sources' ? <SourcesView /> : null}
         {tab === 'chat' ? <ChatView /> : null}
         {tab === 'evaluations' ? <TracesView /> : null}
+        {tab === 'golden' ? <GoldenView /> : null}
         {tab === 'prompts' ? <PromptsView /> : null}
       </main>
     </div>

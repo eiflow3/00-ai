@@ -21,6 +21,15 @@ from app.schemas.chat import ChatRequest
 # --- Prompt schemas ---
 from app.schemas.prompt import Prompt, PromptId, PromptPreview, PromptUpdateRequest
 
+# --- Golden set schemas ---
+from app.schemas.golden import (
+    DocumentSection,
+    GoldenRow,
+    GoldenRunRequest,
+    GoldenSet,
+    GoldenSetDetail,
+)
+
 # --- Trace and evaluation schemas ---
 from app.schemas.trace import Trace, TraceChunk, TraceDetail, TracePage
 from app.schemas.evaluation import Evaluation, EvaluationOptions, EvaluationRequest
@@ -54,6 +63,9 @@ __all__ = [
     "TraceChunk",
     "TraceDetail",
     "TracePage",
+    "GoldenRow",
+    "GoldenSet",
+    "GoldenSetDetail",
     "Evaluation",
     "EvaluationOptions",
     "EvaluationRequest",

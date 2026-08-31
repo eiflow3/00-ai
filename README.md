@@ -22,7 +22,7 @@ EVALUATE        answer + its chunks ──▶ a verdict per stage ──▶ SQLi
 - [What it does](#what-it-does)
 - [Architecture](#architecture)
 - [Getting started](#getting-started)
-- [The three screens](#the-three-screens)
+- [The screens](#the-screens)
 - [How indexing works](#how-indexing-works)
 - [How a file is linked to its vectors](#how-a-file-is-linked-to-its-vectors)
 - [How staleness is detected](#how-staleness-is-detected)
@@ -195,7 +195,7 @@ cd frontend && npm run build && npm run lint
 
 ---
 
-## The three screens
+## The screens
 
 ### Sources
 
@@ -240,6 +240,33 @@ and a single verdict.
 - Withdrawn judgements stay struck through with a **Restore** link. Only
   *Discard this trace* truly deletes.
 - **Export** downloads the judged set as JSONL.
+
+### Golden Sets
+
+- Pick a source file and generate an answer key from it. The file does not have
+  to be indexed: indexing decides what can be *retrieved*, a golden set is about
+  what the document *says*.
+- Progress streams as it drafts, one line per section. Closing the tab does not
+  stop the run — reopening resumes the stream.
+- Every row arrives with a verdict. **Grounded** means every claim in it was
+  found in the source; **N to check** names each check it failed and why.
+- Expanding a row edits the fields most often wrong. **Save and re-check** re-runs
+  every check against the document, so a fix either clears the flag in that
+  response or does not clear it at all.
+- **Accept** or **Drop** per row. Dropping renumbers the rest, so the exported
+  ids never have gaps.
+- **Download** gives the JSONL the offline harness reads. Nothing is trusted
+  because a model wrote it — see `docs/golden-set-generator.md`.
+
+### Prompts
+
+- Every instruction the pipeline sends, grouped into the chat pipeline and the
+  golden set generator, each editable in place.
+- An edit applies to the next question — no restart, no deploy.
+- A template naming a value the pipeline does not supply is refused when saved,
+  rather than failing mid-request.
+- The chat group renders into the exact message list the model receives, using
+  stand-in chunks.
 
 ---
 
@@ -458,6 +485,23 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 | `GET` | `/sources/index/runs/{id}/events` | SSE progress; `?after=` to resume |
 | `DELETE` | `/sources/index/runs/{id}` | stop a run and clear its queue |
 
+### Golden sets
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/golden/options` | question types, difficulties, and validator check names |
+| `POST` | `/golden/runs` | draft a set from a source file; `202` with the run id |
+| `GET` | `/golden/runs/{id}` | where a run stands |
+| `GET` | `/golden/runs/{id}/stream` | SSE progress; `?after=` to resume |
+| `DELETE` | `/golden/runs/{id}` | stop a run |
+| `GET` | `/golden/sets` | every set with its row counts |
+| `GET` | `/golden/sets/{id}` | one set, its rows, and the validator's findings |
+| `PATCH` | `/golden/sets/{id}` | rename the file it exports as |
+| `PATCH` | `/golden/sets/{id}/rows/{row}` | edit or judge one row; an edit re-runs every check |
+| `GET` | `/golden/sets/{id}/export` | download as the JSONL the harness reads |
+| `DELETE` | `/golden/sets/{id}` | withdraw (soft) |
+| `POST` | `/golden/sets/{id}/restore` | undo a withdrawal |
+
 ### Prompts
 
 | Method | Path | Purpose |
@@ -615,6 +659,14 @@ precision, which is the split that separates "retrieved the wrong chunk" from
 
 See `evals/README.md` for the corpus design, the row format, and the flags.
 
+That set was written by hand. Sets for later documents are generated on the
+**Golden Sets** tab: a model drafts the questions, every claim in every row is
+checked back against the source document, and a person signs off before the file
+is downloaded into `evals/golden/`. Scoring is unchanged — the generated files
+are the same format, and the scorer is now shared between the harness and the
+generator's own self-check so the two cannot drift. See
+`docs/golden-set-generator.md`.
+
 This harness and the in-app Evaluations tab answer different questions: the
 harness scores a pipeline against known answers, while the tab captures human
 judgement on real questions nobody wrote a golden answer for.
@@ -643,7 +695,9 @@ judgement on real questions nobody wrote a golden answer for.
 │       ├── features/
 │       │   ├── sources/         the corpus screen
 │       │   ├── chat/            ask and evaluate
-│       │   └── traces/          the evaluations screen
+│       │   ├── traces/          the evaluations screen
+│       │   ├── golden/          draft and sign off answer keys
+│       │   └── prompts/         the wording it all runs on
 │       └── hooks/               one hook per data concern
 ├── data/                        sample corpus
 ├── docs/                        written notes on the approach

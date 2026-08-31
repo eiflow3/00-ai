@@ -18,6 +18,23 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class PromptGroup(str, Enum):
+    """Which part of the system a prompt steers.
+
+    The tab shows every prompt the app is assembled from, and those are no
+    longer all one pipeline: answering a question and drafting an evaluation
+    set are different jobs with different failure modes.  Grouping them keeps
+    the list readable, and keeps someone tuning the generator from wondering
+    why their edit did not change any answers.
+    """
+
+    # Steers how a question is answered.
+    CHAT = "chat"
+
+    # Steers how a golden set is drafted from a source document.
+    GOLDEN = "golden"
+
+
 class PromptId(str, Enum):
     """The prompts the pipeline assembles a request from.
 
@@ -37,6 +54,15 @@ class PromptId(str, Enum):
 
     # Used instead of the context block when retrieval came back empty.
     NO_CONTEXT = "no_context"
+
+    # Drafts questions answerable from one section of a source document.
+    GOLDEN_SECTION = "golden_section"
+
+    # Drafts questions that must join two sections, or compute across them.
+    GOLDEN_CROSS_SECTION = "golden_cross_section"
+
+    # Drafts questions the document does not answer, where refusing is correct.
+    GOLDEN_UNANSWERABLE = "golden_unanswerable"
 
 
 class PromptVariable(BaseModel):
@@ -62,6 +88,12 @@ class Prompt(BaseModel):
     """One prompt as it currently stands, with the default it was built from."""
 
     id: PromptId = Field(..., description="Stable id to address this prompt by")
+
+    # What this prompt steers, so the editor can section the list.
+    group: PromptGroup = Field(
+        default=PromptGroup.CHAT, description="Which part of the system this steers"
+    )
+
     label: str = Field(..., description="Human-readable name")
     description: str = Field(..., description="What this text is for")
 

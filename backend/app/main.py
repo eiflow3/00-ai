@@ -12,10 +12,11 @@ from app.docs import register_openapi_components
 from app.schemas import EchoRequest, EchoResponse, HealthResponse
 from app.routers.chat import router as chat_router
 from app.routers.evaluations import router as evaluations_router
+from app.routers.golden import router as golden_router
 from app.routers.prompts import router as prompts_router
 from app.routers.sources import router as sources_router
 from app.routers.traces import router as traces_router
-from app.services import cache, prompt_db, run_store, trace_db
+from app.services import cache, golden_db, prompt_db, run_store, trace_db
 
 # Installed before anything else logs, so no module's first line is swallowed.
 logging_config.configure()
@@ -35,13 +36,19 @@ async def lifespan(_: FastAPI):
     past their retention window are pruned. Judged ones are kept regardless of
     age — someone looked at them, so they are evidence rather than chatter.
 
-    The prompt store is opened last and pruned never: it holds the wording every
+    The prompt store is opened next and pruned never: it holds the wording every
     answer is written under, and how many of those are overridden is worth a
     line in the log rather than something you have to open the UI to find out.
+
+    The golden set store is opened last, and pruned never for a stronger
+    reason: a golden set is the answer key past eval scores were measured
+    against, so expiring one would retroactively remove the meaning of results
+    someone is still quoting.
     """
     await run_store.initialise()
     await trace_db.initialise()
     await prompt_db.initialise()
+    await golden_db.initialise()
     # Deliberately no host or port: uvicorn may have been given different ones
     # on the command line, and a startup line naming the wrong address is worse
     # than one naming none.
@@ -62,6 +69,7 @@ app.include_router(sources_router)
 app.include_router(traces_router)
 app.include_router(evaluations_router)
 app.include_router(prompts_router)
+app.include_router(golden_router)
 
 # Register schemas for streamed events, which FastAPI can't infer from routes.
 register_openapi_components(app)

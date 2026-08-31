@@ -25,7 +25,10 @@ It is built for retrieval testing, not realism:
 
 ## Golden set
 
-`golden/meridian-fy2025.jsonl` — 40 questions, one JSON object per line.
+`golden/meridian-fy2025.jsonl` — 40 questions, one JSON object per line. Written
+by hand; sets for later documents are generated and reviewed on the **Golden
+Sets** tab instead, then downloaded into this directory. Same format either way,
+so the two are interchangeable — see `docs/golden-set-generator.md`.
 
 | Type | N | What it tests |
 |---|---|---|
@@ -92,6 +95,11 @@ comparable over time and cost nothing. The tradeoff is that `synthesis`
 questions are graded only on keyword presence — treat those two scores as
 weak signals, and read the answers.
 
-Refusal detection is a pattern list (`REFUSAL_PATTERNS` in `run_eval.py`). If
-your prompt makes the model decline in some other phrasing, add the pattern
+`run_eval.py` is the command line and the report; the scoring itself lives in
+`backend/app/services/golden_scorer.py`, so the golden set generator can
+self-check its drafts against the same rules. That module is stdlib-only, so
+this still runs without the backend's dependencies installed.
+
+Refusal detection is a pattern list (`REFUSAL_PATTERNS` in `golden_scorer.py`).
+If your prompt makes the model decline in some other phrasing, add the pattern
 there rather than loosening the golden set.

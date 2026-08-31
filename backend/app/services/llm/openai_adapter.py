@@ -25,13 +25,19 @@ class OpenAIAdapter(BaseLLMAdapter):
         self,
         messages: list[dict],
         model: str = "gpt-5.6-terra",
-        temperature: float = 0.3,
+        temperature: float = 1.0,
     ) -> AsyncGenerator[str, None]:
         """Stream text deltas from OpenAI's chat completions endpoint.
 
         Iterates over the streamed response chunks and yields only the
         text content (delta) of each chunk, skipping empty deltas.
         After streaming, populates self.usage with token counts.
+
+        The default is 1.0, matching the base class, because the current models
+        reject anything else outright — the request fails with a 400 rather
+        than degrading quietly. It read 0.3 until something relied on it: the
+        chat route always passed its own value, so the stale default sat behind
+        the one code path that never used it.
         """
         # Call the OpenAI API with stream=True to receive incremental chunks.
         # stream_options={"include_usage": True} tells OpenAI to include

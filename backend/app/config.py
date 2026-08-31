@@ -149,6 +149,17 @@ class Settings(BaseSettings):
         return self.data_dir / "prompts.db"
 
     @property
+    def golden_store_path(self) -> Path:
+        """SQLite file holding generated golden sets and their review state.
+
+        A fourth file, on the same reasoning as the third.  A golden set is the
+        answer key every eval score is measured against, so it outlives the
+        runs it scored — a retention sweep here would retroactively remove the
+        meaning of results someone is still quoting.
+        """
+        return self.data_dir / "golden.db"
+
+    @property
     def log_path(self) -> Path:
         """Rotating log file for the backend."""
         return self.data_dir / "logs" / "backend.log"

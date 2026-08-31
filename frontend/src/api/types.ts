@@ -560,7 +560,22 @@ export interface TraceEventData {
 // --- Prompts ----------------------------------------------------------------
 
 /** The prompts the pipeline assembles a request from. */
-export type PromptId = 'system' | 'context_block' | 'chunk_format' | 'no_context'
+export type PromptId =
+  | 'system'
+  | 'context_block'
+  | 'chunk_format'
+  | 'no_context'
+  | 'golden_section'
+  | 'golden_cross_section'
+  | 'golden_unanswerable'
+
+/**
+ * Which part of the system a prompt steers.
+ *
+ * Answering a question and drafting an evaluation set are different jobs, so
+ * the editor sections the list rather than running them together.
+ */
+export type PromptGroup = 'chat' | 'golden'
 
 /** One value a template may interpolate, and whether it must. */
 export interface PromptVariable {
@@ -582,6 +597,7 @@ export interface PromptVariable {
  */
 export interface Prompt {
   id: PromptId
+  group: PromptGroup
   label: string
   description: string
   /** When the pipeline uses this template, written for a person. */
@@ -618,4 +634,229 @@ export interface PromptPreviewRequest {
 export interface PromptPreview {
   messages: PromptMessage[]
   character_count: number
+}
+
+// --- Golden sets ------------------------------------------------------------
+
+/** What a golden question is testing. */
+export type GoldenQuestionType =
+  | 'lookup'
+  | 'temporal'
+  | 'distractor'
+  | 'multi_hop'
+  | 'arithmetic'
+  | 'synthesis'
+  | 'unanswerable'
+
+export type GoldenDifficulty = 'easy' | 'medium' | 'hard'
+
+/** Whether the validator could ground a row in the source document. */
+export type GoldenRowStatus = 'valid' | 'flagged'
+
+/** What a person decided about a row. */
+export type GoldenReview = 'pending' | 'accepted' | 'dropped'
+
+export type GoldenSetState = 'drafting' | 'ready' | 'failed'
+
+/** The stages a generation run moves through, in order. */
+export type GoldenStage =
+  | 'extract'
+  | 'segment'
+  | 'facts'
+  | 'draft'
+  | 'validate'
+  | 'self_check'
+
+/** One validator check a row did not pass. */
+export interface GoldenIssue {
+  /** Check name, e.g. 'keys_verbatim'. */
+  check: string
+  /** What was wrong, naming the offending value. */
+  detail: string
+}
+
+/**
+ * How a computed figure was derived from figures the document states.
+ *
+ * Shown so a reviewer can see the working, and recomputed by the validator so
+ * working that does not add up is rejected. Never exported.
+ */
+export interface GoldenDerivation {
+  operands: number[]
+  operator: string
+  explanation: string
+}
+
+/**
+ * One question, its reference answer, and how to score an attempt at it.
+ *
+ * The exported subset is fixed by the offline harness. The rest — the
+ * derivation, the validator's findings, the review decision — is how the row
+ * got here, and stops at the export boundary.
+ */
+export interface GoldenRow {
+  /** Internal id. Edits address this, never the exported Q-number. */
+  row_id: string
+  /** The id the harness reads. Blank on a dropped row, which exports nothing. */
+  question_id: string
+  type: GoldenQuestionType
+  difficulty: GoldenDifficulty
+  question: string
+  answer: string
+  numeric_answer: number | null
+  numeric_tolerance: number | null
+  /** Strings an answer must contain, verbatim from the source. */
+  answer_keys: string[]
+  /** Strings that fail the row if present — the distractor's trap. */
+  forbidden_keys: string[]
+  /** Whether the answer must decline to state this. */
+  must_refuse: boolean
+  gold_sections: string[]
+  note: string
+  derivation: GoldenDerivation | null
+  status: GoldenRowStatus
+  issues: GoldenIssue[]
+  review: GoldenReview
+  edited: boolean
+}
+
+/** A generated answer key for one source file. */
+export interface GoldenSet {
+  set_id: string
+  source_key: string
+  /** Filename stem used on export. */
+  slug: string
+  state: GoldenSetState
+  provider: string
+  model: string
+  created_at: string | null
+  updated_at: string | null
+  row_count: number
+  valid_count: number
+  accepted_count: number
+  /** Section titles a row may cite, so an edit picks from the real outline. */
+  sections: string[]
+  error: string
+  deleted: boolean
+}
+
+export interface GoldenSetDetail extends GoldenSet {
+  rows: GoldenRow[]
+}
+
+/** Request body for starting a generation run. */
+export interface GoldenRunRequest {
+  source_key: string
+  slug?: string
+  provider?: string
+  model?: string
+  /** Multiplier on the per-section quota. The quota itself comes from the document. */
+  density?: number
+}
+
+/**
+ * Body for editing or judging one row.
+ *
+ * Every field optional: a review decision and a text edit go through the same
+ * endpoint, and omitting a field leaves it alone.
+ */
+export interface GoldenRowUpdate {
+  type?: GoldenQuestionType
+  difficulty?: GoldenDifficulty
+  question?: string
+  answer?: string
+  numeric_answer?: number | null
+  numeric_tolerance?: number | null
+  answer_keys?: string[]
+  forbidden_keys?: string[]
+  must_refuse?: boolean
+  gold_sections?: string[]
+  note?: string
+  review?: GoldenReview
+}
+
+/** The vocabulary a client may display or filter by. */
+export interface GoldenOptions {
+  types: string[]
+  difficulties: string[]
+  checks: string[]
+}
+
+export type GoldenRunState = 'running' | 'completed' | 'failed' | 'abandoned'
+
+/** A generation run, as a client reopening the stream finds it. */
+export interface GoldenRun {
+  job_id: string
+  set_id: string
+  source_key: string
+  state: GoldenRunState
+  stage: GoldenStage | null
+  /** Sections drafted so far. */
+  completed: number
+  total: number
+  row_count: number
+  started_at: string | null
+  finished_at: string | null
+  error: string
+  /** Highest cursor emitted, so a reconnect resumes from it. */
+  last_cursor: number
+}
+
+export interface GoldenEnqueueResponse {
+  job_id: string
+  set_id: string
+}
+
+// --- Golden sets: GET /golden/runs/{job_id}/stream --------------------------
+
+export interface GoldenStartedEventData {
+  job_id: string
+  set_id: string
+  source_key: string
+  model: string
+}
+
+export interface GoldenStageEventData {
+  stage: GoldenStage
+  /** What it did, e.g. the section drafted. */
+  detail: string
+  completed: number
+  total: number
+}
+
+export interface GoldenRowEventData {
+  row: GoldenRow
+}
+
+export interface GoldenErrorEventData {
+  stage: GoldenStage
+  detail: string
+  message: string
+  /** False for a failed section: the run reports it and carries on. */
+  fatal: boolean
+}
+
+export interface GoldenSummaryEventData {
+  set_id: string
+  slug: string
+  row_count: number
+  valid_count: number
+  flagged_count: number
+  by_type: Record<string, number>
+  elapsed_ms: number
+  total_cost: number
+}
+
+/** Every event the generation stream can emit, discriminated by `event`. */
+export type GoldenEvent =
+  | { event: 'started'; data: GoldenStartedEventData }
+  | { event: 'stage'; data: GoldenStageEventData }
+  | { event: 'row'; data: GoldenRowEventData }
+  | { event: 'error'; data: GoldenErrorEventData }
+  | { event: 'summary'; data: GoldenSummaryEventData }
+
+/** An event with the cursor it arrived under, so a reconnect can resume. */
+export interface GoldenEventWithCursor {
+  event: GoldenEvent
+  cursor: number
 }

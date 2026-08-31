@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Score RAG outputs against the Meridian FY2025 golden set.
+"""Score RAG outputs against a golden set.
 
 Usage:
     python evals/run_eval.py evals/predictions/my-run.jsonl
@@ -13,6 +13,12 @@ Predictions file: one JSON object per line.
 `retrieved_sections` is optional; supply it to get retrieval metrics. Entries
 should be the section headings your chunks came from.
 
+This file is the command line and the report. The scoring itself lives in
+`backend/app/services/golden_scorer.py`, because the golden set generator
+self-checks its own drafts with the same rules and two copies would drift.
+That module is stdlib-only, so this still runs without the backend's
+dependencies installed.
+
 Scoring is deterministic — no LLM judge — so runs are comparable over time.
   answerable   : numeric match within tolerance when the golden row defines a
                  numeric answer, otherwise all answer_keys must appear.
@@ -23,105 +29,65 @@ Scoring is deterministic — no LLM judge — so runs are comparable over time.
 
 import argparse
 import json
-import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, Iterable, Optional
 
-REFUSAL_PATTERNS = [
-    r"\bnot stated\b", r"\bnot (?:be )?(?:specified|disclosed|provided|reported|included|given)\b",
-    r"\bdoes not (?:state|say|specify|disclose|provide|report|contain|include|break)\b",
-    r"\bdoesn't (?:state|say|specify|disclose|provide|report|contain|include|break)\b",
-    r"\bno (?:information|breakdown|figure|data|mention|disclosure)\b",
-    r"\bcannot (?:be )?(?:determined|answered|found)\b", r"\bcan't be (?:determined|answered|found)\b",
-    r"\bnot available\b", r"\bis not in the (?:report|document|context)\b",
-    r"\bunable to (?:answer|determine|find)\b", r"\bhad not closed\b", r"\bnot yet closed\b",
-    r"\bonly provides guidance\b", r"\bguidance,? not actual\b",
-]
+# The scorer is backend code, and this script deliberately is not — it has no
+# virtualenv of its own and is meant to run from a bare checkout. Adding the
+# backend to the path is the whole of the coupling between them.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+
+from app.services.golden_scorer import score_row  # noqa: E402
+
+# Scored when the predictions file leaves a golden row unanswered, so a partial
+# run cannot inflate the score by simply omitting what it got wrong.
+NO_PREDICTION = "no prediction supplied"
+
+# Failing rows shown before --failures is needed to see the rest.
+FAILURE_PREVIEW = 5
+
+# Characters of a failing answer to echo, and the width of the --by-type bar.
+ANSWER_PREVIEW = 160
+BAR_WIDTH = 20
 
 
-def norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+def mean(values: Iterable[Optional[float]]) -> Optional[float]:
+    """Average, ignoring rows that had nothing to measure."""
+    present = [v for v in values if v is not None]
+    return sum(present) / len(present) if present else None
 
 
-def numbers_in(text: str):
-    """Pull numeric tokens, tolerating thousands separators, $, %, and x suffixes."""
-    out = []
-    for tok in re.findall(r"-?\d[\d,]*(?:\.\d+)?", text or ""):
+def fmt(value: Optional[float]) -> str:
+    """Render a 0-1 metric as a percentage, or 'n/a'."""
+    return "n/a" if value is None else f"{value * 100:5.1f}%"
+
+
+def load_rows(path: Path) -> dict[str, dict[str, Any]]:
+    """Read a JSONL file into rows keyed by question id.
+
+    Args:
+        path: The golden set or predictions file.
+
+    Returns:
+        Each row, keyed by its `id`.
+
+    Raises:
+        SystemExit: On malformed JSON or a row with no id, naming the line.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        if not line.strip():
+            continue
         try:
-            out.append(float(tok.replace(",", "")))
-        except ValueError:
-            pass
-    return out
-
-
-def looks_like_refusal(answer: str) -> bool:
-    low = norm(answer)
-    return any(re.search(p, low) for p in REFUSAL_PATTERNS)
-
-
-def score_row(gold: dict, pred: dict) -> dict:
-    answer = pred.get("answer", "") or ""
-    low = norm(answer)
-    reasons = []
-
-    for fk in gold.get("forbidden_keys", []):
-        if norm(fk) in low:
-            reasons.append(f"contains forbidden key '{fk}'")
-
-    if gold.get("must_refuse"):
-        refused = looks_like_refusal(answer)
-        if not refused:
-            reasons.append("did not acknowledge the report does not state this")
-        # A partially answerable row still needs its stated half present.
-        for k in gold.get("answer_keys", []):
-            if norm(k) not in low:
-                reasons.append(f"missing stated fact '{k}'")
-        correct = not reasons
-    elif gold.get("numeric_answer") is not None:
-        target = float(gold["numeric_answer"])
-        tol = float(gold.get("numeric_tolerance", 0.05))
-        found = numbers_in(answer)
-        hit = any(abs(n - target) <= tol for n in found)
-        if not hit:
-            reasons.append(f"expected {target} (+/-{tol}), answer had {found[:8] or 'no numbers'}")
-        correct = hit and not reasons
-    else:
-        missing = [k for k in gold.get("answer_keys", []) if norm(k) not in low]
-        if missing:
-            reasons.append(f"missing keys: {missing}")
-        correct = not missing and not reasons
-
-    # Support signal: did the answer cite the underlying figures at all?
-    keys = gold.get("answer_keys", [])
-    support = (sum(norm(k) in low for k in keys) / len(keys)) if keys else None
-
-    # Retrieval metrics, only when the prediction reports what it retrieved.
-    gold_secs = gold.get("gold_sections", [])
-    retrieved = pred.get("retrieved_sections")
-    recall = precision = None
-    if retrieved is not None and gold_secs:
-        rset = {norm(s) for s in retrieved}
-        gset = {norm(s) for s in gold_secs}
-        hits = len(gset & rset)
-        recall = hits / len(gset)
-        precision = hits / len(rset) if rset else 0.0
-
-    return {
-        "id": gold["id"], "type": gold["type"], "difficulty": gold["difficulty"],
-        "correct": bool(correct), "support": support,
-        "recall": recall, "precision": precision,
-        "reasons": reasons, "answer": answer,
-    }
-
-
-def mean(vals):
-    vals = [v for v in vals if v is not None]
-    return sum(vals) / len(vals) if vals else None
-
-
-def fmt(v):
-    return "n/a" if v is None else f"{v * 100:5.1f}%"
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"{path}:{number}: bad JSON ({error})")
+        if "id" not in row:
+            raise SystemExit(f"{path}:{number}: row missing 'id'")
+        rows[row["id"]] = row
+    return rows
 
 
 def main() -> int:
@@ -141,25 +107,8 @@ def main() -> int:
         print(f"predictions not found: {args.predictions}", file=sys.stderr)
         return 2
 
-    gold = {}
-    for line in args.golden.read_text().splitlines():
-        if line.strip():
-            r = json.loads(line)
-            gold[r["id"]] = r
-
-    preds = {}
-    for n, line in enumerate(args.predictions.read_text().splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError as e:
-            print(f"{args.predictions}:{n}: bad JSON ({e})", file=sys.stderr)
-            return 2
-        if "id" not in r:
-            print(f"{args.predictions}:{n}: row missing 'id'", file=sys.stderr)
-            return 2
-        preds[r["id"]] = r
+    gold = load_rows(args.golden)
+    preds = load_rows(args.predictions)
 
     unknown = sorted(set(preds) - set(gold))
     if unknown:
@@ -174,8 +123,7 @@ def main() -> int:
             missing.append(qid)
             results.append({"id": qid, "type": g["type"], "difficulty": g["difficulty"],
                             "correct": False, "support": None, "recall": None,
-                            "precision": None, "reasons": ["no prediction supplied"],
-                            "answer": ""})
+                            "precision": None, "reasons": [NO_PREDICTION], "answer": ""})
 
     total = len(results)
     correct = sum(r["correct"] for r in results)
@@ -210,17 +158,17 @@ def main() -> int:
             for name in sorted(buckets, key=lambda n: -len(buckets[n])):
                 rows = buckets[name]
                 c = sum(x["correct"] for x in rows)
-                bar = "#" * round(c / len(rows) * 20)
+                bar = "#" * round(c / len(rows) * BAR_WIDTH)
                 print(f"  {name:<14} {c:>2}/{len(rows):<3} {c / len(rows) * 100:5.1f}%  {bar}")
 
     fails = [r for r in results if not r["correct"]]
     if fails:
         print(f"\n{len(fails)} failing:")
-        shown = fails if args.failures else fails[:5]
+        shown = fails if args.failures else fails[:FAILURE_PREVIEW]
         for r in shown:
             print(f"  [{r['id']}] {r['type']}: {'; '.join(r['reasons'])}")
             if args.failures and r["answer"]:
-                print(f"      got: {r['answer'][:160]}")
+                print(f"      got: {r['answer'][:ANSWER_PREVIEW]}")
         if not args.failures and len(fails) > len(shown):
             print(f"  ... {len(fails) - len(shown)} more (--failures to see all)")
     else:

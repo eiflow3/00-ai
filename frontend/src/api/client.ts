@@ -14,6 +14,16 @@ import type {
   DeleteResponse,
   EnqueueResponse,
   Evaluation,
+  GoldenEnqueueResponse,
+  GoldenEvent,
+  GoldenEventWithCursor,
+  GoldenOptions,
+  GoldenRow,
+  GoldenRowUpdate,
+  GoldenRun,
+  GoldenRunRequest,
+  GoldenSet,
+  GoldenSetDetail,
   EvaluationOptions,
   EvaluationRequest,
   EvaluationTarget,
@@ -465,4 +475,124 @@ export function previewPrompts(
     body: JSON.stringify(body),
     signal,
   })
+}
+
+// --- Golden sets ------------------------------------------------------------
+
+/**
+ * Start drafting a golden set from a source file.
+ *
+ * Returns immediately with a job id. Drafting is a dozen model calls, so the
+ * work is not the response — follow it with `attachGoldenRun`, which any
+ * client can open and reopen.
+ *
+ * The file does not have to be indexed first. Indexing decides what can be
+ * retrieved; a golden set is about what the document says.
+ */
+export function startGoldenRun(body: GoldenRunRequest): Promise<GoldenEnqueueResponse> {
+  return request<GoldenEnqueueResponse>(url('/golden/runs'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * Follow a generation run's event stream.
+ *
+ * Each event carries a cursor in its SSE `id`; pass the last one seen back as
+ * `after` and the stream resumes there rather than replaying everything. Safe
+ * to call on a finished run: it replays and closes, which is how a reload
+ * rebuilds the final state.
+ */
+export async function* attachGoldenRun(
+  jobId: string,
+  after = -1,
+  signal?: AbortSignal,
+): AsyncGenerator<GoldenEventWithCursor> {
+  const target = url(`/golden/runs/${encodeURIComponent(jobId)}/stream`, {
+    after: String(after),
+  })
+
+  for await (const raw of getSse(target, signal)) {
+    yield {
+      event: { event: raw.event, data: JSON.parse(raw.data) } as GoldenEvent,
+      cursor: raw.id === '' ? after : Number(raw.id),
+    }
+  }
+}
+
+/** Stop a generation run in flight. */
+export function stopGoldenRun(jobId: string): Promise<GoldenRun> {
+  return request<GoldenRun>(url(`/golden/runs/${encodeURIComponent(jobId)}`), {
+    method: 'DELETE',
+  })
+}
+
+/** The question types, difficulties and validator checks a set is built from. */
+export function getGoldenOptions(signal?: AbortSignal): Promise<GoldenOptions> {
+  return request<GoldenOptions>(url('/golden/options'), { signal })
+}
+
+/** Every golden set, newest first. */
+export function listGoldenSets(signal?: AbortSignal): Promise<GoldenSet[]> {
+  return request<GoldenSet[]>(url('/golden/sets'), { signal })
+}
+
+/** One golden set with all of its rows and the validator's findings. */
+export function getGoldenSet(setId: string, signal?: AbortSignal): Promise<GoldenSetDetail> {
+  return request<GoldenSetDetail>(url(`/golden/sets/${encodeURIComponent(setId)}`), { signal })
+}
+
+/** Rename the file a set exports as. */
+export function renameGoldenSet(setId: string, slug: string): Promise<GoldenSetDetail> {
+  return request<GoldenSetDetail>(
+    url(`/golden/sets/${encodeURIComponent(setId)}`, { slug }),
+    { method: 'PATCH' },
+  )
+}
+
+/**
+ * Edit one row, or record a decision about it.
+ *
+ * An edit that touches content re-runs every validator check, so fixing a
+ * flagged field clears the flag in the same response.
+ */
+export function updateGoldenRow(
+  setId: string,
+  rowId: string,
+  update: GoldenRowUpdate,
+): Promise<GoldenRow> {
+  return request<GoldenRow>(
+    url(`/golden/sets/${encodeURIComponent(setId)}/rows/${encodeURIComponent(rowId)}`),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(update),
+    },
+  )
+}
+
+/** Withdraw a set. Soft, so a run scored against it can still be explained. */
+export function deleteGoldenSet(setId: string): Promise<void> {
+  return request<void>(url(`/golden/sets/${encodeURIComponent(setId)}`), { method: 'DELETE' })
+}
+
+/** Undo a withdrawal. */
+export function restoreGoldenSet(setId: string): Promise<GoldenSetDetail> {
+  return request<GoldenSetDetail>(
+    url(`/golden/sets/${encodeURIComponent(setId)}/restore`),
+    { method: 'POST' },
+  )
+}
+
+/**
+ * The URL to download a set as the JSONL the offline harness reads.
+ *
+ * Returned rather than fetched: the browser should save the file, and routing
+ * it through `fetch` only to rebuild a download would lose the filename the
+ * server already chose.
+ */
+export function goldenExportUrl(setId: string): string {
+  return url(`/golden/sets/${encodeURIComponent(setId)}/export`)
 }
