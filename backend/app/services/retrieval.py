@@ -8,6 +8,7 @@ which injects the results into the prompt and streams them to the client.
 """
 
 import asyncio
+from typing import Optional
 
 from app.schemas.retrieval import RetrievedChunk, RetrievalResult
 from app.services.embeddings import (
@@ -15,6 +16,7 @@ from app.services.embeddings import (
     EMBEDDING_MODEL_METADATA_KEY,
     embed_query,
 )
+from app.services.pipeline_timeline import Timeline, detached
 from app.services.provenance import (
     METADATA_CONTENT,
     METADATA_DOCUMENT_ID,
@@ -98,38 +100,56 @@ async def retrieve(
     top_k: int = 5,
     score_threshold: float = 0.0,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    timeline: Optional[Timeline] = None,
 ) -> RetrievalResult:
     """Embed the query, search the vector store, and return ranked chunks.
+
+    Each step reports itself to the timeline, so how long retrieval spent
+    embedding versus searching is visible to whoever is watching the request
+    rather than buried in one total.
 
     Args:
         query: The user's natural-language question.
         top_k: Maximum number of chunks to return.
         score_threshold: Drop matches scoring below this value.
         embedding_model: Model used to embed the query.
+        timeline: Where to report each step. Omitted when nobody is watching.
 
     Returns:
         A RetrievalResult with chunks ordered by descending similarity score.
     """
+    timeline = timeline or detached()
+
     # 1. Embed the query with the same model used for the stored chunks.
-    vector = await embed_query(query, model=embedding_model)
+    async with timeline.stage("embedding", "Embedding the question") as stage:
+        vector = await embed_query(query, model=embedding_model)
+        stage.note(f"{embedding_model} · {len(vector)} dimensions")
 
     # 2. Search Pinecone. The client is synchronous, so run it off the event
     #    loop — otherwise the network call blocks every other request.
-    matches = await asyncio.to_thread(query_similar, vector, top_k)
+    async with timeline.stage("search", "Searching the index") as stage:
+        matches = await asyncio.to_thread(query_similar, vector, top_k)
 
-    # 3. Refuse to score across embedding spaces — a model mismatch here would
-    #    otherwise surface as confident-looking but unrelated chunks.
-    _assert_matching_model(matches, embedding_model)
+        # Refuse to score across embedding spaces — a model mismatch here would
+        # otherwise surface as confident-looking but unrelated chunks. It sits
+        # inside the stage so the mismatch is reported against the search that
+        # produced it.
+        _assert_matching_model(matches, embedding_model)
+        stage.note(f"{len(matches)} match(es) returned")
 
-    # 4. Normalise the vendor response into our schema.
-    chunks = [_to_retrieved_chunk(match) for match in matches]
-
-    # 5. Split on the threshold, then order each side best-first. The weak
-    #    matches are returned rather than discarded so a caller recording what
-    #    happened can show that the right passage was there and just missed.
-    chunks.sort(key=lambda c: c.score, reverse=True)
-    kept = [c for c in chunks if c.score >= score_threshold]
-    dropped = [c for c in chunks if c.score < score_threshold]
+    # 3. Normalise the vendor response into our schema, then split on the
+    #    threshold and order each side best-first. The weak matches are returned
+    #    rather than discarded so a caller recording what happened can show that
+    #    the right passage was there and just missed.
+    async with timeline.stage("ranking", "Ranking the matches") as stage:
+        chunks = [_to_retrieved_chunk(match) for match in matches]
+        chunks.sort(key=lambda c: c.score, reverse=True)
+        kept = [c for c in chunks if c.score >= score_threshold]
+        dropped = [c for c in chunks if c.score < score_threshold]
+        stage.note(
+            f"{len(kept)} kept"
+            + (f", {len(dropped)} below {score_threshold:g}" if dropped else "")
+        )
 
     return RetrievalResult(
         query=query,

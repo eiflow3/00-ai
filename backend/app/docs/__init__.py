@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app.docs.chat import CHAT_COMPONENT_SCHEMAS, CHAT_DESCRIPTION, CHAT_RESPONSES
 from app.docs.evaluations import EVALUATIONS_TAG
+from app.docs.prompts import PROMPTS_TAG
 from app.docs.sources import (
     DEINDEX_DESCRIPTION,
     GET_SOURCE_DESCRIPTION,
@@ -53,6 +54,7 @@ __all__ = [
     "CHAT_DESCRIPTION",
     "CHAT_RESPONSES",
     "EVALUATIONS_TAG",
+    "PROMPTS_TAG",
     "DEINDEX_DESCRIPTION",
     "GET_SOURCE_DESCRIPTION",
     "GET_SOURCE_RESPONSES",

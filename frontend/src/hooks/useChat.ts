@@ -9,7 +9,7 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { streamChat } from '../api/client'
-import type { ChatRequest, RetrievedChunk, UsageEventData } from '../api/types'
+import type { ChatRequest, RetrievedChunk, StageEventData, UsageEventData } from '../api/types'
 
 export interface UseChatResult {
   /** The question the current answer belongs to. */
@@ -23,6 +23,13 @@ export interface UseChatResult {
   traceId: string | null
   /** Chunks that grounded the answer, best score first. */
   citations: RetrievedChunk[]
+  /**
+   * Each pipeline step and how long it took, in the order they ran.
+   *
+   * Never filtered or relabelled here: the server names its own stages, so a
+   * step added to the pipeline shows up without a change on this side.
+   */
+  stages: StageEventData[]
   /** Answer text so far, appended delta by delta. */
   answer: string
   /** Tokens and cost, present only once the stream has closed. */
@@ -45,6 +52,7 @@ export function useChat(): UseChatResult {
   const [question, setQuestion] = useState('')
   const [traceId, setTraceId] = useState<string | null>(null)
   const [citations, setCitations] = useState<RetrievedChunk[]>([])
+  const [stages, setStages] = useState<StageEventData[]>([])
   const [answer, setAnswer] = useState('')
   const [usage, setUsage] = useState<UsageEventData | null>(null)
   const [streaming, setStreaming] = useState(false)
@@ -70,6 +78,7 @@ export function useChat(): UseChatResult {
     setQuestion(trimmed)
     setTraceId(null)
     setCitations([])
+    setStages([])
     setAnswer('')
     setUsage(null)
     setRetrieved(false)
@@ -85,6 +94,21 @@ export function useChat(): UseChatResult {
             // Arrives first, before retrieval has even run.
             setTraceId(event.data.trace_id)
             break
+
+          case 'stage': {
+            // A stage reports twice — starting, then ending with its duration.
+            // Both carry the same sequence, so the second replaces the first
+            // rather than adding a row.
+            const stage = event.data
+            setStages((current) => {
+              const at = current.findIndex((seen) => seen.sequence === stage.sequence)
+              if (at === -1) return [...current, stage]
+              const next = [...current]
+              next[at] = stage
+              return next
+            })
+            break
+          }
 
           case 'retrieval':
             setCitations(event.data.chunks)
@@ -131,6 +155,7 @@ export function useChat(): UseChatResult {
     question,
     traceId,
     citations,
+    stages,
     answer,
     usage,
     streaming,

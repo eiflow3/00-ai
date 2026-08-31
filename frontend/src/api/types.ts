@@ -298,6 +298,30 @@ export interface ChatErrorEventData {
   message: string
 }
 
+/** Whether a pipeline stage is running, finished, or failed. */
+export type StageStatus = 'started' | 'completed' | 'failed'
+
+/**
+ * One step of the request's pipeline, reported as it starts and again as it ends.
+ *
+ * The set of stages is the server's to decide and will grow, so nothing here
+ * lists them: `label` is display wording sent by the stage itself, and a step
+ * added to the pipeline later renders without a change on this side.
+ */
+export interface StageEventData {
+  /** Position in the timeline. The start and end of one stage share it. */
+  sequence: number
+  /** Stable id for the stage, safe to branch on. */
+  name: string
+  /** Human wording, ready to display as-is. */
+  label: string
+  status: StageStatus
+  /** Duration in milliseconds; 0 while the stage is still running. */
+  elapsed_ms: number
+  /** What the stage produced, or why it failed. */
+  detail: string
+}
+
 /**
  * Token counts and cost for the generation call.
  *
@@ -355,10 +379,14 @@ export interface ChatRequest {
  *
  * `trace` arrives first, before retrieval runs, carrying the id this request is
  * being recorded under. It is what an evaluation is later filed against.
+ *
+ * `stage` events run alongside everything else, reporting each pipeline step as
+ * it starts and ends.
  */
 export type ChatEvent =
   | { event: 'trace'; data: TraceEventData }
   | { event: 'message'; data: string }
+  | { event: 'stage'; data: StageEventData }
   | { event: 'retrieval'; data: RetrievalEventData }
   | { event: 'error'; data: ChatErrorEventData }
   | { event: 'usage'; data: UsageEventData }
@@ -527,4 +555,67 @@ export interface EvaluationPage {
 /** Payload of the chat stream's first event. */
 export interface TraceEventData {
   trace_id: string
+}
+
+// --- Prompts ----------------------------------------------------------------
+
+/** The prompts the pipeline assembles a request from. */
+export type PromptId = 'system' | 'context_block' | 'chunk_format' | 'no_context'
+
+/** One value a template may interpolate, and whether it must. */
+export interface PromptVariable {
+  /** Placeholder name, written in the template as {name}. */
+  name: string
+  description: string
+  /** True when a template that leaves it out would drop information. */
+  required: boolean
+  /** Stand-in value used to preview the template. */
+  example: string
+}
+
+/**
+ * One prompt as it currently stands, with the default it was built from.
+ *
+ * `template` is what the pipeline will use; `default_template` is what ships
+ * with the code. They differ exactly while `edited` is true, which is what a
+ * reset undoes.
+ */
+export interface Prompt {
+  id: PromptId
+  label: string
+  description: string
+  /** When the pipeline uses this template, written for a person. */
+  applies_when: string
+  template: string
+  default_template: string
+  variables: PromptVariable[]
+  edited: boolean
+  updated_at: string | null
+  /** True when an empty template is allowed, and turns the prompt off. */
+  optional: boolean
+}
+
+/** Request body for saving an override. */
+export interface PromptUpdateRequest {
+  template: string
+}
+
+/** One assembled message, as the provider adapters receive it. */
+export interface PromptMessage {
+  role: string
+  content: string
+}
+
+/** Request body for rendering the prompts into the messages they produce. */
+export interface PromptPreviewRequest {
+  query?: string
+  chunk_count?: number
+  /** False previews the path taken when RAG is off. */
+  grounded?: boolean
+}
+
+/** The message list the prompts currently in force would produce. */
+export interface PromptPreview {
+  messages: PromptMessage[]
+  character_count: number
 }

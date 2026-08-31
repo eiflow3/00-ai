@@ -1,23 +1,26 @@
 /**
  * Application shell.
  *
- * Three screens following the pipeline: Sources puts files into the index, Chat
- * asks questions of it, and Evaluations is where those answers get judged
- * against the chunks that produced them. Three screens do not justify a router.
+ * Four screens following the pipeline: Sources puts files into the index, Chat
+ * asks questions of it, Evaluations is where those answers get judged against
+ * the chunks that produced them, and Prompts is the wording every answer was
+ * written under. Four screens do not justify a router.
  */
 
 import { useState } from 'react'
 
 import { ChatView } from './features/chat/ChatView'
+import { PromptsView } from './features/prompts/PromptsView'
 import { SourcesView } from './features/sources/SourcesView'
 import { TracesView } from './features/traces/TracesView'
 
-type Tab = 'sources' | 'chat' | 'evaluations'
+type Tab = 'sources' | 'chat' | 'evaluations' | 'prompts'
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'sources', label: 'Sources' },
   { value: 'chat', label: 'Chat' },
   { value: 'evaluations', label: 'Evaluations' },
+  { value: 'prompts', label: 'Prompts' },
 ]
 
 function App() {
@@ -49,6 +52,7 @@ function App() {
         {tab === 'sources' ? <SourcesView /> : null}
         {tab === 'chat' ? <ChatView /> : null}
         {tab === 'evaluations' ? <TracesView /> : null}
+        {tab === 'prompts' ? <PromptsView /> : null}
       </main>
     </div>
   )

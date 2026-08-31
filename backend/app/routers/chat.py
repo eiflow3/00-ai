@@ -19,6 +19,7 @@ from app.schemas.chat import (
     ModelOption,
     ChatStreamErrorEvent,
     ChatStreamRetrievalEvent,
+    ChatStreamStageEvent,
     ChatStreamTraceEvent,
     ChatStreamUsageEvent,
     ErrorEventData,
@@ -26,11 +27,12 @@ from app.schemas.chat import (
     TraceEventData,
 )
 from app.schemas.retrieval import RetrievalResult
-from app.services import chat_trace
+from app.services import chat_trace, prompt_store
 from app.services.cost_tracker import calculate_cost
 from app.services.llm import get_adapter
 from app.services.llm.catalog import DEFAULT_MODELS, list_models
-from app.services.prompt_builder import build_messages
+from app.services.pipeline_timeline import Timeline
+from app.services.prompt_builder import build_messages, resolve_system_prompt
 from app.services.retrieval import retrieve
 
 router = APIRouter()
@@ -42,6 +44,7 @@ _FALLBACK_MODEL = "gpt-5.6-terra"
 def _sse(
     event: ChatStreamTraceEvent
     | ChatStreamRetrievalEvent
+    | ChatStreamStageEvent
     | ChatStreamErrorEvent
     | ChatStreamUsageEvent,
 ) -> dict:
@@ -93,6 +96,10 @@ async def chat(body: ChatRequest):
     3. Emits a "retrieval" event with each chunk and its similarity score.
     4. Streams the LLM's text deltas, grounded in those chunks.
     5. Sends a final "usage" event with token counts and cost breakdown.
+
+    Throughout, each step reports itself as a "stage" event — as it starts and
+    again as it ends, carrying how long it took. A step added to the pipeline
+    later shows up on the client without anything here listing it.
     """
     # Get the adapter for the requested provider.
     try:
@@ -103,11 +110,27 @@ async def chat(body: ChatRequest):
     # Resolve the model — use the client's override or fall back to the default.
     model = body.model or DEFAULT_MODELS.get(body.provider, _FALLBACK_MODEL)
 
+    # Read the prompts before the stream opens. Once the response has begun a
+    # store failure could only be reported as an event, and a request whose
+    # wording could not be resolved has nothing worth streaming anyway.
+    prompts = await prompt_store.active()
+
+    # What this request will actually run under, which is what the trace has to
+    # record: the client's own system prompt if it sent one, else the configured
+    # default. "What was sent" and "what the client asked for" are no longer the
+    # same thing, and only the first can be judged later.
+    system_prompt = resolve_system_prompt(body.system_prompt, prompts)
+
     async def event_generator() -> AsyncIterator[dict]:
-        """Yield the trace id, the retrieval event, the deltas, then the usage."""
+        """Yield the trace id, each stage as it runs, the deltas, then the usage."""
         # Recording starts before anything can fail, so a request that dies
         # halfway still leaves behind what it managed to do.
-        recorder = chat_trace.start(body, model)
+        recorder = chat_trace.start(body, model, system_prompt)
+
+        # Every stage of the pipeline reports itself here, and each event is put
+        # on the wire as soon as it is recorded — a stage the client only hears
+        # about once the answer arrives has stopped being progress.
+        timeline = Timeline()
 
         # First event on the wire: the client needs this id before the answer
         # arrives, because every later judgement is filed against it.
@@ -118,22 +141,35 @@ async def chat(body: ChatRequest):
             # Client-supplied chunks win, so a caller that already ran retrieval
             # (or is replaying a conversation) isn't charged for it twice.
             if body.context_chunks:
-                result = RetrievalResult(
-                    query=body.query,
-                    chunks=body.context_chunks,
-                    total_searched=len(body.context_chunks),
-                )
-            elif body.use_rag:
-                try:
-                    result = await retrieve(
-                        body.query,
-                        top_k=body.top_k,
-                        score_threshold=body.score_threshold,
-                        embedding_model=body.embedding_model,
+                async with timeline.stage("context", "Using the supplied context") as stage:
+                    result = RetrievalResult(
+                        query=body.query,
+                        chunks=body.context_chunks,
+                        total_searched=len(body.context_chunks),
                     )
+                    stage.note(f"{len(body.context_chunks)} chunk(s) sent with the request")
+                for event in timeline.drain():
+                    yield _sse(ChatStreamStageEvent(data=event))
+            elif body.use_rag:
+                # Run as a task so its stages reach the client while it is still
+                # working, rather than all at once when it returns.
+                search = asyncio.ensure_future(retrieve(
+                    body.query,
+                    top_k=body.top_k,
+                    score_threshold=body.score_threshold,
+                    embedding_model=body.embedding_model,
+                    timeline=timeline,
+                ))
+                async for event in timeline.follow(search):
+                    yield _sse(ChatStreamStageEvent(data=event))
+
+                try:
+                    # The task has already finished; this only unwraps it.
+                    result = await search
                 except Exception as exc:
                     # Retrieval is best-effort: tell the client it failed, then
                     # answer without context rather than dropping the request.
+                    # Which step failed already went out as a stage event.
                     recorder.record_error("retrieval", str(exc))
                     yield _sse(ChatStreamErrorEvent(
                         data=ErrorEventData(stage="retrieval", message=str(exc))
@@ -156,25 +192,63 @@ async def chat(body: ChatRequest):
             )))
 
             # --- Generation phase --------------------------------------------
-            messages = build_messages(
-                query=body.query,
-                chunks=result.chunks,
-                system_prompt=body.system_prompt,
-            )
+            async with timeline.stage("prompt", "Building the prompt") as stage:
+                messages = build_messages(
+                    query=body.query,
+                    chunks=result.chunks,
+                    system_prompt=system_prompt,
+                    # False only when the caller asked for an ungrounded answer:
+                    # nothing was searched, so the empty-retrieval fallback would
+                    # be reporting a failure that never happened.
+                    grounded=body.use_rag or bool(body.context_chunks),
+                    prompts=prompts,
+                )
+                stage.note(f"{len(result.chunks)} chunk(s) in context")
+            for event in timeline.drain():
+                yield _sse(ChatStreamStageEvent(data=event))
 
             # Stream text deltas from the LLM adapter. The response status was
             # sent when the stream opened, so a provider failure here cannot become
             # an HTTP error — it has to be an event, or the connection just dies
             # mid-answer with nothing explaining why.
-            try:
-                async for token in adapter.stream(messages, model, body.temperature):
-                    recorder.append_answer(token)
-                    # Each yield sends a "data: <token>\n\n" SSE event to the client.
-                    yield {"data": token}
-            except Exception as exc:
-                recorder.record_error("generation", str(exc))
+            generation_error = ""
+            async with timeline.stage("generation", "Generating the answer") as stage:
+                # The stage has to be announced before the first token, or the
+                # slowest step of the request is the one with nothing on screen.
+                for event in timeline.drain():
+                    yield _sse(ChatStreamStageEvent(data=event))
+
+                deltas = 0
+                first_token_ms = 0
+                try:
+                    async for token in adapter.stream(messages, model, body.temperature):
+                        # Time to first token is the wait a person actually feels,
+                        # and it is not visible in the stage's total.
+                        if not deltas:
+                            first_token_ms = stage.elapsed_ms
+                        deltas += 1
+                        recorder.append_answer(token)
+                        # Each yield sends a "data: <token>\n\n" SSE event to the client.
+                        yield {"data": token}
+                except Exception as exc:
+                    # Failed here rather than raised: the stage has to be closed
+                    # as failed, but this generator owns how the client is told.
+                    stage.fail(str(exc))
+                    generation_error = str(exc)
+                else:
+                    stage.note(
+                        f"first token in {first_token_ms / 1000:.2f}s · {deltas} deltas"
+                        if deltas
+                        else "the model returned no text"
+                    )
+
+            for event in timeline.drain():
+                yield _sse(ChatStreamStageEvent(data=event))
+
+            if generation_error:
+                recorder.record_error("generation", generation_error)
                 yield _sse(ChatStreamErrorEvent(
-                    data=ErrorEventData(stage="generation", message=str(exc))
+                    data=ErrorEventData(stage="generation", message=generation_error)
                 ))
                 return
 

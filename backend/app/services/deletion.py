@@ -22,7 +22,7 @@ deleted, and nothing later would reveal where they came from.
 
 import logging
 
-from app.services import index_catalog, index_registry
+from app.services import index_catalog, index_registry, source_cache
 from app.services.object_store import delete_object
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ async def delete_vectors(source_key: str) -> int:
     _guard(source_key)
 
     deleted = await index_catalog.delete_document(source_key)
+    await source_cache.invalidate(source_key)
+
     logger.info("deindexed %s: %d vector(s) removed", source_key, deleted)
 
     return deleted
@@ -100,6 +102,8 @@ async def delete_source(source_key: str) -> tuple[int, bool]:
     # `not_indexed`, which is recoverable, rather than orphaned vectors.
     deleted = await index_catalog.delete_document(source_key)
     removed = await delete_object(source_key)
+
+    await source_cache.invalidate(source_key)
 
     logger.info(
         "deleted %s: file %s, %d vector(s) removed",

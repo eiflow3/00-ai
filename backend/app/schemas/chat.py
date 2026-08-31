@@ -189,6 +189,51 @@ class ChatStreamRetrievalEvent(BaseModel):
     data: RetrievalEventData = Field(..., description="Retrieved chunks and their scores")
 
 
+class StageEventData(BaseModel):
+    """Payload of the `stage` SSE event.
+
+    One step of the pipeline, reported as it starts and again as it ends. A
+    client renders these as a timeline of what the request spent its time on;
+    it must not enumerate the stages it knows about, because a stage added to
+    the pipeline later arrives here carrying its own wording.
+    """
+
+    # Position in the timeline. The start and end of one stage share it, so a
+    # client updates a row rather than appending a second one.
+    sequence: int = Field(..., ge=1, description="Position of this stage in the timeline")
+
+    # Stable id for the stage, safe to branch on (e.g. "embedding").
+    name: str = Field(..., description="Machine-readable stage id")
+
+    # Wording written for a person, supplied by the stage itself.
+    label: str = Field(..., description="Human-readable stage name, ready to display")
+
+    # Whether the stage is running, finished, or failed.
+    status: Literal["started", "completed", "failed"] = Field(
+        ..., description="Whether the stage is running, finished, or failed"
+    )
+
+    # How long the stage took. Zero on the `started` event.
+    elapsed_ms: int = Field(
+        default=0, ge=0, description="Duration in milliseconds, 0 while the stage runs"
+    )
+
+    # What the stage produced, or why it failed — one line, for display.
+    detail: str = Field(
+        default="", description="What the stage produced, or the failure message"
+    )
+
+
+class ChatStreamStageEvent(BaseModel):
+    """Represents one pipeline stage's start or end in the SSE stream.
+
+    Sent with the event name 'stage', interleaved with the rest of the stream.
+    """
+
+    event: Literal["stage"] = Field(default="stage", description="The SSE event name")
+    data: StageEventData = Field(..., description="The stage, and how long it took")
+
+
 class ErrorEventData(BaseModel):
     """Payload of the `error` SSE event.
 

@@ -86,17 +86,22 @@ async def list_sources(
     state: Optional[IndexState] = Query(
         default=None, description="Return only files in this state"
     ),
+    refresh: bool = Query(
+        default=False,
+        description="Bypass the cached index read and rebuild it from the index",
+    ),
 ) -> list[SourceStatus]:
     """List every source file with its index state.
 
     Args:
         prefix: Restrict the listing to keys beginning with this prefix.
         state: Return only files in this state.
+        refresh: Rebuild the cached index read instead of using it.
 
     Returns:
         One status row per file, newest change first, orphans last.
     """
-    statuses = await sync_status.list_statuses(prefix)
+    statuses = await sync_status.list_statuses(prefix, refresh=refresh)
 
     if state is not None:
         statuses = [status for status in statuses if status.state == state]
@@ -324,12 +329,19 @@ async def replace_source(
     description=GET_SOURCE_DESCRIPTION,
     responses=GET_SOURCE_RESPONSES,
 )
-async def get_source(source_key: str) -> SourceDetail:
+async def get_source(
+    source_key: str,
+    refresh: bool = Query(
+        default=False,
+        description="Bypass the cached index read and rebuild it from the index",
+    ),
+) -> SourceDetail:
     """Return one file's state together with its indexed chunks.
 
     Args:
         source_key: The object key within the bucket. Declared as a path
             parameter so keys containing slashes are matched whole.
+        refresh: Rebuild the cached index read instead of using it.
 
     Returns:
         The file's status and its chunks, in document order.
@@ -337,7 +349,7 @@ async def get_source(source_key: str) -> SourceDetail:
     Raises:
         HTTPException: 404 when neither storage nor the index knows the key.
     """
-    detail = await sync_status.get_detail(source_key)
+    detail = await sync_status.get_detail(source_key, refresh=refresh)
 
     # Neither side has ever heard of this key — not merely un-indexed.
     if detail.status.source is None and detail.status.indexed is None:

@@ -12,9 +12,10 @@ from app.docs import register_openapi_components
 from app.schemas import EchoRequest, EchoResponse, HealthResponse
 from app.routers.chat import router as chat_router
 from app.routers.evaluations import router as evaluations_router
+from app.routers.prompts import router as prompts_router
 from app.routers.sources import router as sources_router
 from app.routers.traces import router as traces_router
-from app.services import run_store, trace_db
+from app.services import cache, prompt_db, run_store, trace_db
 
 # Installed before anything else logs, so no module's first line is swallowed.
 logging_config.configure()
@@ -33,14 +34,24 @@ async def lifespan(_: FastAPI):
     The trace database is prepared here too, which is when unjudged chat traces
     past their retention window are pruned. Judged ones are kept regardless of
     age — someone looked at them, so they are evidence rather than chatter.
+
+    The prompt store is opened last and pruned never: it holds the wording every
+    answer is written under, and how many of those are overridden is worth a
+    line in the log rather than something you have to open the UI to find out.
     """
     await run_store.initialise()
     await trace_db.initialise()
+    await prompt_db.initialise()
     # Deliberately no host or port: uvicorn may have been given different ones
     # on the command line, and a startup line naming the wrong address is worse
     # than one naming none.
     logger.info("%s ready", settings.app_name)
     yield
+
+    # The cache holds a Redis connection when one is configured. Nothing here
+    # depends on it surviving, but a connection left open logs a warning on the
+    # way out that reads like a fault.
+    await cache.close()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -50,6 +61,7 @@ app.include_router(chat_router)
 app.include_router(sources_router)
 app.include_router(traces_router)
 app.include_router(evaluations_router)
+app.include_router(prompts_router)
 
 # Register schemas for streamed events, which FastAPI can't infer from routes.
 register_openapi_components(app)

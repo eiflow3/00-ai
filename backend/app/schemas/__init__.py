@@ -18,6 +18,9 @@ from app.schemas.generation import GenerationRequest, GenerationResponse
 # --- Chat schemas ---
 from app.schemas.chat import ChatRequest
 
+# --- Prompt schemas ---
+from app.schemas.prompt import Prompt, PromptId, PromptPreview, PromptUpdateRequest
+
 # --- Trace and evaluation schemas ---
 from app.schemas.trace import Trace, TraceChunk, TraceDetail, TracePage
 from app.schemas.evaluation import Evaluation, EvaluationOptions, EvaluationRequest
@@ -41,6 +44,11 @@ __all__ = [
     "GenerationResponse",
     # Chat
     "ChatRequest",
+    # Prompts
+    "Prompt",
+    "PromptId",
+    "PromptPreview",
+    "PromptUpdateRequest",
     # Traces and evaluations
     "Trace",
     "TraceChunk",

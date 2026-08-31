@@ -1,8 +1,8 @@
 """OpenAPI documentation for the POST /chat Server-Sent Events stream.
 
 OpenAPI has no native way to describe a stream of differently-shaped events, so
-this module builds the `responses` object by hand: a `oneOf` over the four event
-schemas plus prose covering the ordering guarantees a client can rely on.
+this module builds the `responses` object by hand: a `oneOf` over every event
+schema plus prose covering the ordering guarantees a client can rely on.
 
 It lives apart from the router so the handler stays readable, and it derives
 every schema from the models in app.schemas.chat — the documentation cannot
@@ -17,6 +17,7 @@ from app.schemas.chat import (
     ChatStreamErrorEvent,
     ChatStreamMessageEvent,
     ChatStreamRetrievalEvent,
+    ChatStreamStageEvent,
     ChatStreamTraceEvent,
     ChatStreamUsageEvent,
 )
@@ -24,6 +25,7 @@ from app.schemas.chat import (
 # Every event shape the stream can emit, in the order they can occur.
 _EVENT_MODELS = (
     ChatStreamTraceEvent,
+    ChatStreamStageEvent,
     ChatStreamErrorEvent,
     ChatStreamRetrievalEvent,
     ChatStreamMessageEvent,
@@ -74,6 +76,7 @@ A `text/event-stream` of SSE events. Emitted in this order:
 | Event | Occurrences | Payload |
 | --- | --- | --- |
 | `trace` | exactly 1, always first | The id this request is being recorded under. |
+| `stage` | 2 per pipeline step | One step starting, and later the same step ending with its duration. |
 | `error` | 0 or more | Which pipeline stage failed, and why. |
 | `retrieval` | exactly 1 | The chunks that ground the answer, each with its similarity score. |
 | *(unnamed)* | 0 or more | One delta of answer text. Has no `event:` line, so it arrives as SSE's default `message` type. |
@@ -87,11 +90,27 @@ A `text/event-stream` of SSE events. Emitted in this order:
   judgement (`POST /traces/{trace_id}/evaluations`) and how it reads the
   evidence back (`GET /traces/{trace_id}`). A client that never evaluates can
   ignore it.
+* `stage` reports the pipeline itself: each step sends one event when it starts
+  and a second when it ends, carrying `elapsed_ms` and a one-line `detail` of
+  what it produced. Both share a `sequence`, so a client updates one row rather
+  than appending two. Events are written as the step happens, not collected and
+  sent at the end, so they can drive live progress.
+
+  **The set of stages is not fixed and will grow.** A client must render
+  whatever arrives — `label` is server-supplied display wording — and must not
+  enumerate the stages it knows about, or a step added to the pipeline later
+  will be silently dropped. `name` is stable and safe to branch on for a client
+  that wants to treat one specific step differently. The steps sent today are
+  `embedding`, `search`, `ranking` (retrieval, or `context` when the client
+  supplied the chunks itself), then `prompt` and `generation`.
 * `retrieval` always arrives before the first text delta, so a client can render
   citations while the answer is still streaming. It is sent even when retrieval
   is disabled or matched nothing — with an empty `chunks` list.
 * `chunks` are ordered by descending similarity score, already filtered by the
   request's `score_threshold`.
+* A failing step ends as a `stage` event with `status: "failed"`, whose
+  `detail` is the failure message; where that is survivable an `error` event
+  follows it.
 * `error` reports which stage failed. A `retrieval` failure is non-fatal —
   it arrives first and the answer still streams, ungrounded. A `generation`
   failure ends the stream: the HTTP status was already sent when the stream
@@ -109,6 +128,15 @@ A `text/event-stream` of SSE events. Emitted in this order:
 _STREAM_EXAMPLE = (
     'event: trace\n'
     'data: {"trace_id":"9f2c4a1b8e7d4c2fa0b1c2d3e4f5a6b7"}\n'
+    '\n'
+    'event: stage\n'
+    'data: {"sequence":1,"name":"embedding","label":"Embedding the question",'
+    '"status":"started","elapsed_ms":0,"detail":""}\n'
+    '\n'
+    'event: stage\n'
+    'data: {"sequence":1,"name":"embedding","label":"Embedding the question",'
+    '"status":"completed","elapsed_ms":412,'
+    '"detail":"text-embedding-3-small \u00b7 1536 dimensions"}\n'
     '\n'
     'event: retrieval\n'
     'data: {"query":"What is the refund window?","chunks":[{"chunk_id":"c1",'

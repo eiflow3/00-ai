@@ -23,6 +23,9 @@ import type {
   IndexRun,
   IndexState,
   ModelOption,
+  Prompt,
+  PromptPreview,
+  PromptPreviewRequest,
   SourceDetail,
   SourceStatus,
   TraceDeleteResponse,
@@ -405,4 +408,61 @@ export function restoreEvaluation(evaluationId: string): Promise<Evaluation> {
  */
 export function evaluationExportUrl(): string {
   return url('/evaluations/export')
+}
+
+// --- Prompts ----------------------------------------------------------------
+
+/**
+ * List every prompt the pipeline assembles a request from.
+ *
+ * Fetched rather than mirrored here for the same reason the evaluation
+ * vocabulary is: the templates and the variables they may use are the
+ * backend's, and a client editing a placeholder the pipeline cannot fill would
+ * only find out when a chat request died mid-stream.
+ */
+export function listPrompts(signal?: AbortSignal): Promise<Prompt[]> {
+  return request<Prompt[]>(url('/prompts'), { signal })
+}
+
+/**
+ * Replace one prompt's text.
+ *
+ * Saving the shipped default is treated as a reset, so a prompt stops reading
+ * as edited once it matches the code again. Prompts marked `optional` accept an
+ * empty template, which turns them off rather than sending a blank message.
+ *
+ * @throws ApiError - 400 if the template would not render in the pipeline.
+ */
+export function updatePrompt(promptId: string, template: string): Promise<Prompt> {
+  return request<Prompt>(url(`/prompts/${encodeURIComponent(promptId)}`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ template }),
+  })
+}
+
+/** Restore one prompt to the text it ships with. */
+export function resetPrompt(promptId: string): Promise<Prompt> {
+  return request<Prompt>(url(`/prompts/${encodeURIComponent(promptId)}/reset`), {
+    method: 'POST',
+  })
+}
+
+/**
+ * Render the prompts in force into the exact messages a request would send.
+ *
+ * The templates read differently apart than assembled — the chunk format is
+ * repeated once per retrieved chunk, inside the block that carries them — so
+ * the editor shows the result rather than asking anyone to imagine it.
+ */
+export function previewPrompts(
+  body: PromptPreviewRequest = {},
+  signal?: AbortSignal,
+): Promise<PromptPreview> {
+  return request<PromptPreview>(url('/prompts/preview'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
 }

@@ -59,7 +59,13 @@ from app.schemas.ingestion import (
     IndexSummaryEventData,
 )
 from app.schemas.source import IndexState, SourceStatus
-from app.services import index_registry, ingestion, run_store, sync_status
+from app.services import (
+    index_registry,
+    ingestion,
+    run_store,
+    source_cache,
+    sync_status,
+)
 from app.services.text_extraction import UnsupportedSourceType
 
 logger = logging.getLogger(__name__)
@@ -436,7 +442,9 @@ async def _process(job: _Job, source_key: str) -> None:
 
     except asyncio.CancelledError:
         # Stop was pressed mid-file. Record what we know before unwinding, so
-        # the history does not simply lose the file.
+        # the history does not simply lose the file. Whatever vectors did land
+        # are real, so the cached view of this file is out of date either way.
+        await source_cache.invalidate(source_key)
         await run_store.file_finished(
             job.job_id,
             source_key,
@@ -468,6 +476,11 @@ async def _process(job: _Job, source_key: str) -> None:
     job.total_reused += result.reused
     job.total_pruned += result.pruned
     job.processed_keys.append(source_key)
+
+    # Per file rather than per run: a client watching the stream refreshes its
+    # list as each file completes, and would otherwise be served the listing as
+    # it stood before the run started.
+    await source_cache.invalidate(source_key)
 
     await run_store.file_finished(
         job.job_id,

@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AliasChoices, Field
@@ -60,6 +61,64 @@ class Settings(BaseSettings):
     # every entry is an embedding bill waiting to be paid.
     max_index_queue: int = 50
 
+    # --- Caching ------------------------------------------------------------
+    # The /sources reads join object storage against the vector index, and the
+    # index side is the expensive half: finding orphans means walking every
+    # vector id, and describing each file means another round trip per file.
+    # None of that changes between two page loads, so it is cached.
+    cache_enabled: bool = True
+
+    # Redis connection, given either as a whole URL or as its parts.  The parts
+    # are the better form for a password: a URL has to percent-encode anything
+    # in `@:/?#%`, and a generated password will contain some of it sooner or
+    # later.  `redis_dsn` below settles which one is in force.
+    redis_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_URL", "redis_url"),
+    )
+    redis_host: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_HOST", "redis_host"),
+    )
+    redis_port: int = Field(
+        default=6379,
+        validation_alias=AliasChoices("REDIS_PORT", "redis_port"),
+    )
+    redis_username: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_USERNAME", "redis_username"),
+    )
+    redis_password: str = Field(
+        default="",
+        validation_alias=AliasChoices("REDIS_PASSWORD", "redis_password"),
+    )
+    redis_db: int = Field(
+        default=0,
+        validation_alias=AliasChoices("REDIS_DB", "redis_db"),
+    )
+    # Whether to reach Redis over TLS. Managed providers generally require it;
+    # a Redis on localhost generally does not offer it.
+    redis_tls: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("REDIS_TLS", "redis_tls"),
+    )
+
+    # How long a cached read may stand before it is rebuilt regardless of
+    # whether anything looks changed.  This is the backstop for the one case
+    # the freshness checks cannot see: an edit made directly on the R2 or
+    # Pinecone console that leaves the vector count identical.  Short, because
+    # the whole point is that the cached data is cheap to rebuild.
+    cache_ttl_seconds: int = 60
+
+    # Whether the prompt overrides are held in memory between reads.  Separate
+    # from `cache_enabled` because it is a different decision on different
+    # evidence: that one guards network calls to R2 and Pinecone, this one
+    # guards a four-row read of a local SQLite file, and it is safe only
+    # because nothing but this process writes that file.  Turn it off the
+    # moment there is a second worker — each would hold its own copy and never
+    # hear about the other's edit.
+    prompt_cache_enabled: bool = True
+
     # Where run history and logs are written.  Relative to the backend package's
     # parent, so it resolves the same however uvicorn was launched.
     data_dir: Path = Path(__file__).resolve().parent.parent / "data"
@@ -79,9 +138,53 @@ class Settings(BaseSettings):
         return self.data_dir / "traces.db"
 
     @property
+    def prompt_store_path(self) -> Path:
+        """SQLite file holding edits made to the pipeline's prompts.
+
+        A third file rather than a table in either of the others, because its
+        retention rule is "never".  Runs prune at thirty days and unjudged
+        traces with them; the wording that decides how every answer is grounded
+        must not share a database with anything that deletes on a timer.
+        """
+        return self.data_dir / "prompts.db"
+
+    @property
     def log_path(self) -> Path:
         """Rotating log file for the backend."""
         return self.data_dir / "logs" / "backend.log"
+
+    @property
+    def redis_dsn(self) -> str:
+        """The Redis connection string, however it was configured.
+
+        An explicit `REDIS_URL` wins outright — someone who supplied a whole
+        URL means it. Otherwise one is assembled from the parts, which is the
+        form that does not make the operator think about percent-encoding: the
+        credentials are quoted here instead, so a password full of punctuation
+        connects rather than failing to parse.
+
+        Returns:
+            A connection string, or empty when no Redis is configured — which
+            is what puts the cache on its in-process backend.
+        """
+        if self.redis_url:
+            return self.redis_url
+
+        if not self.redis_host:
+            return ""
+
+        # `safe=""` so nothing at all is left unescaped; a password containing
+        # `@` or `/` would otherwise be read as part of the host or the path.
+        credentials = ""
+        if self.redis_password or self.redis_username:
+            credentials = (
+                f"{quote(self.redis_username, safe='')}:"
+                f"{quote(self.redis_password, safe='')}@"
+            )
+
+        scheme = "rediss" if self.redis_tls else "redis"
+
+        return f"{scheme}://{credentials}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def r2_endpoint_url(self) -> str:

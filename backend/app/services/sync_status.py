@@ -20,7 +20,7 @@ from app.schemas.source import (
     SourceObject,
     SourceStatus,
 )
-from app.services import index_catalog, index_registry
+from app.services import index_catalog, index_registry, source_cache
 from app.services.object_store import head_object, list_objects
 from app.services.text_extraction import is_supported
 
@@ -163,38 +163,52 @@ async def _head_or_none(source_key: str) -> Optional[SourceObject]:
         return None
 
 
-async def get_detail(source_key: str) -> SourceDetail:
+async def get_detail(source_key: str, refresh: bool = False) -> SourceDetail:
     """Return one file's status together with every chunk indexed from it.
+
+    The storage side is read live and the index side comes through the cache,
+    which is also what collapses this to one listing of the file's vector ids:
+    the status and the chunks are built from the same read rather than from
+    two.
 
     Args:
         source_key: The object key within the bucket.
+        refresh: Re-read the index rather than using what is cached.
 
     Returns:
         The file's status and its indexed chunks, in document order.
     """
-    status, chunks = await asyncio.gather(
-        get_status(source_key),
-        index_catalog.get_chunks(source_key),
+    source, (indexed, chunks) = await asyncio.gather(
+        _head_or_none(source_key),
+        source_cache.load_detail(source_key, refresh=refresh),
     )
+
+    status = build_status(source, indexed, settings.embedding_model, source_key)
+
     return SourceDetail(status=status, chunks=chunks)
 
 
-async def list_statuses(prefix: str = "") -> list[SourceStatus]:
+async def list_statuses(prefix: str = "", refresh: bool = False) -> list[SourceStatus]:
     """List every source file, joined with its embeddings.
 
     Both sides are enumerated rather than just storage, so a file whose
     vectors outlived it still appears — as an orphan — instead of vanishing
     from the listing entirely.
 
+    Storage is listed live on every call; the index side comes through the
+    cache, which is where the cost is. So a file added or removed directly in
+    the bucket shows up immediately, with no cache involvement at all.
+
     Args:
         prefix: Restrict the listing to keys beginning with this prefix.
+        refresh: Re-read the index rather than using what is cached.
 
     Returns:
         One status per file, newest change first, orphans last.
     """
-    objects, indexed_keys = await asyncio.gather(
+    objects, documents = await asyncio.gather(
         list_objects(prefix),
-        index_catalog.list_indexed_source_keys(),
+        source_cache.load_documents(refresh=refresh),
     )
 
     stored_keys = {source.key for source in objects}
@@ -202,21 +216,8 @@ async def list_statuses(prefix: str = "") -> list[SourceStatus]:
     # Keys the index holds but storage no longer has — the orphans.
     orphan_keys = sorted(
         key
-        for key in indexed_keys - stored_keys
+        for key in documents.keys() - stored_keys
         if not prefix or key.startswith(prefix)
-    )
-
-    # Only files the index actually knows about need a provenance lookup, and
-    # those lookups are independent — run them together rather than walking
-    # the bucket one round trip at a time.
-    lookup_keys = [key for key in stored_keys if key in indexed_keys] + orphan_keys
-    documents = dict(
-        zip(
-            lookup_keys,
-            await asyncio.gather(
-                *(index_catalog.get_indexed_document(key) for key in lookup_keys)
-            ),
-        )
     )
 
     # Storage side first, preserving the newest-change-first order the store
@@ -244,7 +245,11 @@ async def list_reindexable(prefix: str = "", only_stale: bool = True) -> list[So
         The files to index, skipping orphans and unreadable file types, which
         no amount of re-indexing would resolve.
     """
-    statuses = await list_statuses(prefix)
+    # Deliberately bypasses the cache. This decides what an indexing run will
+    # spend money embedding, and it runs once per run rather than once per page
+    # load — so it can afford the fresh read, and should not risk paying to
+    # re-embed a file on the strength of a cached verdict.
+    statuses = await list_statuses(prefix, refresh=True)
 
     return [
         status

@@ -35,17 +35,22 @@ _pending: set[asyncio.Task] = set()
 class TraceRecorder:
     """Collects one request's pieces, then writes them as a single trace."""
 
-    def __init__(self, request: ChatRequest, model: str) -> None:
+    def __init__(self, request: ChatRequest, model: str, system_prompt: str = "") -> None:
         """Start recording a request.
 
         Args:
             request: The chat request as validated.
             model: The model actually resolved for it, which may differ from
                 the request's own field when the client sent no override.
+            system_prompt: The system prompt the request will actually run
+                under. Taken separately from the request because it may come
+                from the prompt store rather than the client, and a trace has
+                to say what the model was shown, not what was asked for.
         """
         self.trace_id: str = uuid.uuid4().hex
         self._request = request
         self._model = model
+        self._system_prompt = system_prompt
 
         self._created_at = datetime.now(timezone.utc)
         self._started = time.perf_counter()
@@ -147,7 +152,7 @@ class TraceRecorder:
             provider=self._request.provider,
             model=self._model,
             temperature=self._request.temperature,
-            system_prompt=self._request.system_prompt or "",
+            system_prompt=self._system_prompt,
             use_rag=self._request.use_rag,
             top_k=self._request.top_k,
             score_threshold=self._request.score_threshold,
@@ -180,17 +185,18 @@ class TraceRecorder:
         return TraceState.COMPLETED
 
 
-def start(request: ChatRequest, model: str) -> TraceRecorder:
+def start(request: ChatRequest, model: str, system_prompt: str = "") -> TraceRecorder:
     """Begin recording a chat request.
 
     Args:
         request: The chat request as validated.
         model: The model resolved for it.
+        system_prompt: The system prompt resolved for it.
 
     Returns:
         A recorder holding the trace id to send to the client.
     """
-    return TraceRecorder(request, model)
+    return TraceRecorder(request, model, system_prompt)
 
 
 def _to_trace_chunk(chunk: RetrievedChunk, rank: int, dropped: bool) -> TraceChunk:

@@ -18,7 +18,7 @@ from pathlib import PurePosixPath
 
 from app.config import settings
 from app.schemas.source import SourceObject
-from app.services import index_catalog
+from app.services import index_catalog, source_cache
 from app.services.object_store import head_object, put_object
 from app.services.text_extraction import SUPPORTED_EXTENSIONS, is_supported
 
@@ -160,7 +160,14 @@ async def upload_new(
             f"Replace it instead of uploading over it."
         )
 
-    return await put_object(key, data, DEFAULT_CONTENT_TYPE), True
+    stored = await put_object(key, data, DEFAULT_CONTENT_TYPE)
+
+    # The listing has a new row in it. Told rather than discovered: the index's
+    # own statistics lag a write, so the cache's freshness check alone could
+    # still describe the state before this call.
+    await source_cache.invalidate(key)
+
+    return stored, True
 
 
 async def replace(
@@ -198,5 +205,7 @@ async def replace(
 
     # Every existing vector describes bytes that no longer exist.
     pruned = await index_catalog.delete_document(source_key)
+
+    await source_cache.invalidate(source_key)
 
     return stored, pruned

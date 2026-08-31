@@ -219,6 +219,10 @@ and a single verdict.
 
 - Pick a provider and model from what the backend reports as actually
   configured, rather than a hardcoded list that drifts.
+- A pipeline timeline fills in as the request runs — each step, what it produced,
+  and how long it took, so the wait before the first token is accounted for
+  rather than hidden behind a spinner. The steps are named by the server, so one
+  added to the pipeline appears here without a change on the client.
 - Retrieval arrives first, so citations and scores render while the answer is
   still streaming.
 - Token usage and cost close the stream.
@@ -438,8 +442,8 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/sources` | every file joined with its embeddings; `prefix`, `state` filters |
-| `GET` | `/sources/{key}` | one file plus every chunk indexed from it |
+| `GET` | `/sources` | every file joined with its embeddings; `prefix`, `state` filters; `refresh` to bypass the cache |
+| `GET` | `/sources/{key}` | one file plus every chunk indexed from it; `refresh` to bypass the cache |
 | `POST` | `/sources/upload` | store a new file (multipart); `201` new, `200` identical retry, `409` name taken by different content |
 | `PUT` | `/sources/{key}` | replace contents and discard the old vectors |
 | `DELETE` | `/sources/{key}/index` | remove a file's vectors, keep the file |
@@ -454,11 +458,21 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 | `GET` | `/sources/index/runs/{id}/events` | SSE progress; `?after=` to resume |
 | `DELETE` | `/sources/index/runs/{id}` | stop a run and clear its queue |
 
+### Prompts
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/prompts` | every prompt the pipeline sends, with its default and variables |
+| `GET` | `/prompts/{id}` | one prompt as it stands |
+| `PUT` | `/prompts/{id}` | save an override; `400` if it would not render |
+| `POST` | `/prompts/{id}/reset` | restore the shipped default |
+| `POST` | `/prompts/preview` | render the prompts in force into the messages they produce |
+
 ### Chat
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/chat` | SSE: `retrieval`, then text deltas, then `usage` |
+| `POST` | `/chat` | SSE: `stage` per pipeline step, `retrieval`, then text deltas, then `usage` |
 | `GET` | `/chat/models` | provider/model pairs this deployment can actually use |
 
 ### Traces and evaluations

@@ -106,6 +106,35 @@ timestamps are still returned — `source.last_modified` from storage and
 `indexed.embedded_at` from the index — because they are what a person reads.
 """
 
+_CACHING_DESCRIPTION = """\
+### Freshness
+
+The two sides of this endpoint are not read the same way. Object storage is
+listed **live on every request**, so a file added or deleted straight from the
+bucket — the R2 console included — is visible immediately. The vector index is
+the expensive side, so what it holds is cached.
+
+A cached read is discarded as soon as any of these says it is out of date:
+
+* **this application wrote something** — an upload, a replace, a deletion, or a
+  file finishing an indexing run — which invalidates instantly;
+* **the index itself moved** — checked cheaply on every request against the
+  index's own total vector count for the listing, and against the file's vector
+  ids for a single file. This is what catches vectors added or removed directly
+  in the Pinecone console;
+* **the entry expired**, after a short TTL.
+
+The TTL is the backstop for the one change nothing else can see: an edit made
+directly on a provider console that leaves the vector count and the id set
+exactly as they were, such as rewriting one chunk's text in place. Working
+directly on either console is outside the contract these endpoints keep — the
+application is the only writer that can invalidate instantly.
+
+Pass `refresh=true` to skip the cache and rebuild from the index. That is the
+escape hatch after changing something on a provider console, and the way to
+confirm what is really stored rather than what was last read.
+"""
+
 LIST_SOURCES_DESCRIPTION = f"""\
 List every source file alongside the state of its embeddings.
 
@@ -122,15 +151,17 @@ while its embeddings are being built.
 Files that exist only in the index — whose object has since been deleted —
 appear at the end of the list as `orphaned`, so nothing indexed is invisible.
 
+{_CACHING_DESCRIPTION}
 {_RELATIONSHIP_DESCRIPTION}"""
 
-GET_SOURCE_DESCRIPTION = """\
+GET_SOURCE_DESCRIPTION = f"""\
 Return one file's state together with every chunk indexed from it.
 
 The chunks come back in document order with their vector ids, so a client can
 inspect exactly what was embedded and trace any retrieval result back to its
 position in the source file.
-"""
+
+{_CACHING_DESCRIPTION}"""
 
 DEINDEX_DESCRIPTION = """\
 Delete a file's vectors from the index, leaving the file itself untouched in

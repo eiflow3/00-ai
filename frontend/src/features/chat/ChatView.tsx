@@ -1,8 +1,9 @@
 /**
  * The chat screen: ask a question, watch it get answered from the index.
  *
- * The retrieved chunks land before any answer text, so the citations appear
- * first and the answer streams in beneath them.
+ * The stream is ordered so the screen fills top-down as the request runs: the
+ * pipeline's steps report themselves as they happen, the retrieved chunks land
+ * before any answer text, and the answer streams in beneath them.
  */
 
 import { useState } from 'react'
@@ -11,6 +12,7 @@ import type { FormEvent } from 'react'
 import { Citations } from './Citations'
 import { EvaluatePanel } from './EvaluatePanel'
 import { ModelPicker } from './ModelPicker'
+import { StageTimeline } from './StageTimeline'
 import { UsageBar } from './UsageBar'
 import type { ModelOption } from '../../api/types'
 import { EmptyState } from '../../components/EmptyState'
@@ -115,6 +117,9 @@ export function ChatView() {
       {hasAnswered ? (
         <>
           <p className="mb-4 text-sm font-medium text-slate-800">{chat.question}</p>
+
+          {/* Above the citations because it starts filling in before they exist. */}
+          <StageTimeline stages={chat.stages} />
 
           <Citations chunks={chat.citations} retrieved={chat.retrieved} />
 
