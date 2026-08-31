@@ -1,10 +1,17 @@
-"""Data embedding pipeline — request body and streamed event payloads.
+"""Data embedding pipeline — request body, run records and streamed events.
 
-Indexing a batch of files runs long enough that a single JSON response would
-sit behind a proxy timeout, so the endpoint streams its progress instead. Every
-event it can emit is defined here, and documented in app.docs.sources.
+Indexing runs long enough that it cannot be the response to the request that
+asked for it: a client that reloads would cancel the work. So a request only
+*enqueues*, and progress is read from a separate stream that any client can
+open, close and reopen.
+
+Three kinds of payload live here: what a caller sends (`IndexRequest`), what
+enqueuing and the runs listing return (`EnqueueResponse`, `IndexRun`), and
+every event the stream can emit — documented in app.docs.sources.
 """
 
+from datetime import datetime
+from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -72,6 +79,10 @@ class IndexRequest(BaseModel):
 class IndexStartedEventData(BaseModel):
     """Payload of the `started` event, sent once before any file is processed."""
 
+    # The run this stream belongs to. A client keeps it so a reload can ask for
+    # the same run again rather than starting a new one.
+    job_id: str = Field(default="", description="Id of the run this stream reports on")
+
     # The files this run will process, in the order they will be handled.
     keys: list[str] = Field(
         default_factory=list, description="Object keys this run will process"
@@ -85,19 +96,42 @@ class IndexStartedEventData(BaseModel):
         default="", description="Embedding model used for this run"
     )
 
-    # Files this run skipped because another run is already embedding them.
-    # Not an error: the work is happening, just not here.
-    busy: list[str] = Field(
-        default_factory=list,
-        description="Keys skipped because another run is already indexing them",
-    )
-
 
 class IndexStartedEvent(BaseModel):
     """Opens the stream with the run's scope."""
 
     event: Literal["started"] = Field(default="started", description="The SSE event name")
     data: IndexStartedEventData = Field(..., description="What this run will process")
+
+
+class IndexQueuedEventData(BaseModel):
+    """Payload of the `queued` event, sent when the queue grows mid-run.
+
+    One worker drains one queue, so pressing Index again during a run adds to
+    the work in flight rather than starting a rival run. The client's totals
+    have to follow, which is what this event is for.
+    """
+
+    # Files added by the request that triggered this event.
+    added: list[str] = Field(
+        default_factory=list, description="Keys just added to the queue"
+    )
+
+    # Everything now waiting, in queue order.
+    pending: list[str] = Field(
+        default_factory=list, description="Keys still waiting, in order"
+    )
+
+    # Files this run has taken on in total, finished ones included. This is the
+    # denominator a progress bar should use.
+    total: int = Field(default=0, ge=0, description="Files this run has taken on")
+
+
+class IndexQueuedEvent(BaseModel):
+    """Reports the queue growing while a run is already in flight."""
+
+    event: Literal["queued"] = Field(default="queued", description="The SSE event name")
+    data: IndexQueuedEventData = Field(..., description="What was added, and what waits")
 
 
 class IndexProgressEventData(BaseModel):
@@ -114,8 +148,12 @@ class IndexProgressEventData(BaseModel):
     # Position of this file in the run, 1-based.
     file_number: int = Field(default=0, ge=0, description="1-based position in the run")
 
-    # Total files in the run, so a client can render a bar without counting.
-    total_files: int = Field(default=0, ge=0, description="Total files in this run")
+    # Files this run has taken on so far. Can grow while the run is in
+    # flight, because a later Index click joins this run rather than starting
+    # another — so a client should re-read it rather than caching the first one.
+    total_files: int = Field(
+        default=0, ge=0, description="Files this run has taken on so far"
+    )
 
     # Chunks produced so far, once chunking has happened.
     chunk_count: int = Field(default=0, ge=0, description="Chunks produced for this file")
@@ -134,8 +172,13 @@ class IndexCompletedEventData(BaseModel):
     # Which file finished.
     source_key: str = Field(..., description="Object key that finished")
 
-    # How many chunks were written.
-    chunk_count: int = Field(default=0, ge=0, description="Chunks written to the index")
+    # How many chunks the file has in the index now.
+    chunk_count: int = Field(default=0, ge=0, description="Chunks the file now has")
+
+    # Chunks that did not need embedding because the index already held them,
+    # identical and from the same model. Non-zero means a previous interrupted
+    # run was resumed rather than repeated.
+    reused: int = Field(default=0, ge=0, description="Chunks reused without re-embedding")
 
     # Leftover chunks removed because the file shrank.
     pruned: int = Field(default=0, ge=0, description="Stale chunks removed")
@@ -194,8 +237,14 @@ class IndexSummaryEventData(BaseModel):
     # Files that failed.
     failed: int = Field(default=0, ge=0, description="Files that failed")
 
-    # Total chunks written across the run.
-    total_chunks: int = Field(default=0, ge=0, description="Chunks written across the run")
+    # Total chunks across every file the run touched.
+    total_chunks: int = Field(default=0, ge=0, description="Chunks across the run")
+
+    # Chunks the run did not have to embed, because the index already held
+    # them. The measure of what resuming saved.
+    total_reused: int = Field(
+        default=0, ge=0, description="Chunks reused without re-embedding"
+    )
 
     # Total leftover chunks pruned across the run.
     total_pruned: int = Field(default=0, ge=0, description="Stale chunks removed")
@@ -214,9 +263,121 @@ class IndexSummaryEvent(BaseModel):
     data: IndexSummaryEventData = Field(..., description="Totals for the whole run")
 
 
+class IndexRunState(str, Enum):
+    """Where a run stands. Every state but `running` is terminal."""
+
+    # The worker is draining the queue.
+    RUNNING = "running"
+
+    # The queue emptied and the worker stopped of its own accord.
+    COMPLETED = "completed"
+
+    # The worker stopped on an error that was not scoped to a single file.
+    FAILED = "failed"
+
+    # Someone pressed Stop.
+    CANCELLED = "cancelled"
+
+    # The server stopped while this run was in flight. Recorded on the next
+    # startup, because a run marked `running` with no process behind it is a
+    # lie — and one a person reading the history would be misled by.
+    ABANDONED = "abandoned"
+
+
+class IndexRun(BaseModel):
+    """One indexing run, live or finished.
+
+    What `GET /sources/index/runs` returns. A client asks for this on load: if
+    a run is in flight it holds the id needed to attach to its stream, which is
+    how progress survives a reload.
+    """
+
+    # Id to attach to, and the key into run history.
+    job_id: str = Field(..., description="Id of this run")
+
+    state: IndexRunState = Field(..., description="Where this run stands")
+
+    # Files still waiting, in order.
+    pending: list[str] = Field(
+        default_factory=list, description="Keys still waiting, in order"
+    )
+
+    # The file being embedded right now, if any.
+    current: str = Field(default="", description="Key being embedded right now")
+
+    # Files this run has taken on in total, finished ones included.
+    total: int = Field(default=0, ge=0, description="Files this run has taken on")
+
+    # Outcome counts, filled in as the run proceeds.
+    indexed: int = Field(default=0, ge=0, description="Files embedded")
+    skipped: int = Field(default=0, ge=0, description="Files skipped")
+    failed: int = Field(default=0, ge=0, description="Files that failed")
+
+    # Chunks the run did not have to embed.
+    total_reused: int = Field(
+        default=0, ge=0, description="Chunks reused without re-embedding"
+    )
+
+    started_at: Optional[datetime] = Field(default=None, description="When it began")
+    finished_at: Optional[datetime] = Field(default=None, description="When it ended")
+
+    # Why it failed, when it did.
+    error: str = Field(default="", description="Failure detail, if it failed")
+
+    # Position of the last event emitted. A client re-attaching passes this as
+    # `after` so it resumes rather than replaying what it already has.
+    last_cursor: int = Field(
+        default=-1, description="Cursor of the last event emitted by this run"
+    )
+
+
+class EnqueueResponse(BaseModel):
+    """Result of asking for files to be indexed.
+
+    The request only enqueues — it does not wait, and it does not stream. The
+    job id it returns is what a client opens the event stream with, which means
+    starting a run and returning to one after a reload take the same path.
+    """
+
+    # The run the accepted files joined, whether newly started or already going.
+    job_id: str = Field(..., description="Run the accepted files joined")
+
+    # Files added to the queue by this request.
+    accepted: list[str] = Field(
+        default_factory=list, description="Keys added to the queue"
+    )
+
+    # Files that were already queued or being embedded. Not an error — the work
+    # is already going to happen, so a second click is simply redundant.
+    already_queued: list[str] = Field(
+        default_factory=list, description="Keys already queued or in flight"
+    )
+
+    # Files refused because the queue is full. Named rather than silently
+    # dropped, so a caller knows exactly what did not get in.
+    rejected: list[str] = Field(
+        default_factory=list, description="Keys refused because the queue is full"
+    )
+
+    # Keys the caller named that are not in storage at all.
+    missing: list[str] = Field(
+        default_factory=list, description="Keys with no object behind them"
+    )
+
+    # The configured ceiling, so a client can explain a rejection without
+    # having the limit hardcoded on its side.
+    limit: int = Field(default=0, ge=0, description="Most files that may wait at once")
+
+    # Everything now waiting, in queue order.
+    pending: list[str] = Field(
+        default_factory=list, description="Keys still waiting, in order"
+    )
+
+
 # Union of everything the indexing stream can emit, for the docs module.
 IndexStreamEvent = (
     IndexStartedEvent
+    | IndexQueuedEvent
     | IndexProgressEvent
     | IndexCompletedEvent
     | IndexErrorEvent

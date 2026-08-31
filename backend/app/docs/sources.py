@@ -19,6 +19,7 @@ from app.schemas.ingestion import (
     IndexCompletedEvent,
     IndexErrorEvent,
     IndexProgressEvent,
+    IndexQueuedEvent,
     IndexStartedEvent,
     IndexSummaryEvent,
 )
@@ -26,6 +27,7 @@ from app.schemas.ingestion import (
 # Every event shape the indexing stream can emit, in the order they occur.
 _EVENT_MODELS = (
     IndexStartedEvent,
+    IndexQueuedEvent,
     IndexProgressEvent,
     IndexCompletedEvent,
     IndexErrorEvent,
@@ -86,8 +88,16 @@ _STATE_TABLE = """\
 | `current` | The embeddings match the file in storage. | Nothing to do. |
 | `stale_content` | The file changed in storage after it was embedded. | Re-index it. |
 | `stale_model` | Embedded with a different model than the one configured now. | Re-index it. |
+| `interrupted` | A previous run stopped partway, so only some of the file's chunks are indexed. | Re-index it; only the missing chunks are embedded. |
 | `orphaned` | Vectors exist for a file that is no longer in storage. | Delete its vectors. |
 | `unsupported` | No extractor handles this file type; indexing skips it. | Convert or remove the file. |
+
+`interrupted` is detected differently from the rest. Every vector records how
+many chunks the whole file should have, so comparing that against the number of
+vectors actually present reveals a write that stopped early or a prune that
+never ran. Without it such a file would report `current`: its first chunk
+carries the right content hash, while its tail still holds text from a version
+that no longer exists.
 
 Staleness is decided by the **content hash**, not the timestamp. Object storage
 updates `last_modified` on any rewrite, including one that stores byte-identical
@@ -104,9 +114,10 @@ exists in storage, what the vector index holds for it, and a single verdict
 saying whether the embeddings need rebuilding.
 
 {_STATE_TABLE}
-The separate `indexing` flag says whether a run is embedding that file *right
-now*. It is orthogonal to `state`, which describes what is stored — a file can
-read `not_indexed` while its embeddings are being built.
+Two separate flags say what is *happening* to the file, as opposed to what is
+stored: `queued` while it waits its turn, and `indexing` while it is actually
+being embedded. Both are orthogonal to `state` — a file can read `not_indexed`
+while its embeddings are being built.
 
 Files that exist only in the index — whose object has since been deleted —
 appear at the end of the list as `orphaned`, so nothing indexed is invisible.
@@ -207,32 +218,45 @@ REPLACE_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 
 _INDEX_STREAM_DESCRIPTION = """\
-A `text/event-stream` reporting the run's progress. Events arrive in this order:
+A `text/event-stream` reporting one run's progress. Events arrive in this order:
 
 | Event | Occurrences | Payload |
 | --- | --- | --- |
-| `started` | exactly 1, always first | Which files the run will process, with which model, and which were skipped as already running. |
+| `started` | exactly 1, always first | The run's id, the files it opened with, and the embedding model. |
+| `queued` | 0 or more | Files added to this run after it began, because a later request joined it. |
 | `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `chunking`, `embedding`, `upserting`. |
-| `completed` | 0 or 1 per file | That file's chunk count, and how many stale chunks were pruned. |
+| `completed` | 0 or 1 per file | That file's chunk count, how many chunks were reused without re-embedding, and how many were pruned. |
 | `error` | 0 or more | One file failing. The run continues. |
 | `summary` | exactly 1, always last | Totals, plus the final state of every processed file. |
 
+**Re-attaching**
+
+Every event carries an SSE `id` field holding its cursor. Pass the last one you
+saw back as `after` and the stream resumes from there; omit it and the run
+replays from the beginning, which is what a client that has just reloaded wants
+in order to rebuild its progress state.
+
+A run whose live buffer has aged out — or one from before the server restarted —
+is replayed from run history instead. The events are the same either way.
+
 **Guarantees**
 
-* `started` always arrives first and names every file in the run, so a client
-  can size a progress bar before any work happens.
-* A file another run is already embedding is left to that run and listed in
-  `started.busy` rather than processed twice. Two runs on one file interleave
-  their writes into an index matching neither version, so the second yields.
-  Files reported this way are not counted in `total` and produce no further
-  events.
+* `started` always arrives first and carries the run's id, so a client can
+  re-attach later without having to ask which run is going.
+* `total` can grow. One worker drains one queue, so pressing Index again during
+  a run adds to the work in flight rather than starting a rival run; each
+  addition arrives as a `queued` event. A progress bar should read `total_files`
+  from the latest event rather than caching the first.
 * `error` is non-fatal and scoped to one file: an unreadable upload or a failed
   embedding call does not abort the remaining files. Failures that occur before
-  the stream opens are returned as an HTTP error status instead, never as an
-  event.
+  the run is accepted are returned as an HTTP error status on the enqueue call
+  instead, never as an event.
 * A file reported by `error` never also reports `completed` as indexed — except
   for an unsupported file type, which reports `completed` with `skipped: true`
   followed by an `error` explaining what was skipped.
+* `completed.reused` counts chunks the index already held, identical and from
+  the same model, which were therefore not embedded again. A non-zero value
+  means an interrupted run was resumed rather than repeated.
 * `summary.statuses` is re-read from storage and the index after the run, not
   asserted from what was written, so a client can refresh its file list from it
   directly.
@@ -241,49 +265,117 @@ A `text/event-stream` reporting the run's progress. Events arrive in this order:
 """
 
 INDEX_SOURCES_DESCRIPTION = f"""\
-Run the data embedding pipeline: load each file from object storage, split it
-into overlapping chunks, embed them, and write them to the vector index with
-the provenance that makes staleness detectable.
+Queue files for embedding, and return the run they joined.
+
+This endpoint **does not stream**. It accepts work and returns immediately; the
+run's progress is read from `GET /sources/index/runs/{{job_id}}/events`.
+
+That separation is the point. When the work was the response, a client that
+reloaded cancelled the run mid-file and lost embeddings it had already paid for,
+and a second request aborted the first. Now the run belongs to the server: it
+outlives every client, and any client can open, close and reopen its stream.
+
+One worker drains one queue, so a request while a run is in flight **joins that
+run** rather than starting another. The response says which run the files joined.
 
 With no `keys`, the run covers everything under `prefix` that needs it — which
 is the "re-index what is stale" case. Naming `keys` explicitly targets just
 those files, whatever their current state.
 
-Chunks that a shrinking file no longer produces are pruned, so stale text
-cannot keep surfacing in retrieval results.
+**What the response tells you**
 
-{_INDEX_STREAM_DESCRIPTION}
+* `accepted` — files added to the queue.
+* `already_queued` — files that were already waiting or being embedded. Not an
+  error: the work is going to happen, so the request is simply redundant.
+* `rejected` — files refused because the queue is full. Named rather than
+  silently dropped, with `limit` giving the ceiling so a client need not
+  hardcode it.
+* `missing` — named keys with no object behind them.
+
+**What a run does to each file**
+
+Chunks the index already holds, identical and from the same model, are not
+embedded again — so an interrupted run resumes rather than starting over. Chunks
+a shrinking file no longer produces are pruned, so stale text cannot keep
+surfacing in retrieval results.
+
 {_RELATIONSHIP_DESCRIPTION}"""
+
+
+LIST_RUNS_DESCRIPTION = """\
+List the indexing run in flight, if there is one, followed by recent history.
+
+This is the question a client asks on load: *is anything being indexed right
+now?* A live run comes back first, carrying the `job_id` needed to attach to its
+stream — which is how progress survives a reload.
+
+History is read from disk, so this still answers after a restart. A run that was
+in flight when the server stopped reads `abandoned`: the process that owned it is
+gone, so it neither completed nor failed, and saying so is more honest than
+leaving it marked `running`.
+"""
+
+STOP_RUN_DESCRIPTION = """\
+Stop a run, discarding whatever was still queued.
+
+Needed because a run no longer dies with the tab that started it. Without this,
+a large run begun by mistake could only be waited out or killed with the server.
+
+The file being embedded when Stop arrives may be left partially written. That is
+recorded rather than hidden: the file will report `interrupted`, and re-indexing
+it embeds only the chunks that are missing.
+"""
+
+ATTACH_RUN_DESCRIPTION = f"""\
+Stream one run's progress, replaying whatever the client missed.
+
+The only streaming endpoint here. A run just started and a run being returned to
+after a reload are read the same way, so there is one framing path rather than
+two that have to behave identically.
+
+{_INDEX_STREAM_DESCRIPTION}"""
 
 
 # A representative stream, shown in the docs UI.
 _INDEX_STREAM_EXAMPLE = (
+    "id: 0\n"
     "event: started\n"
-    'data: {"keys":["policy.md"],"total":1,'
+    'data: {"job_id":"9f1c2ab4de7f5061","keys":["policy.md"],"total":1,'
     '"embedding_model":"text-embedding-3-small"}\n'
     "\n"
+    "id: 1\n"
     "event: progress\n"
     'data: {"source_key":"policy.md","stage":"chunking","file_number":1,'
     '"total_files":1,"chunk_count":4}\n'
     "\n"
+    "id: 2\n"
     "event: completed\n"
-    'data: {"source_key":"policy.md","chunk_count":4,"pruned":0,'
+    'data: {"source_key":"policy.md","chunk_count":4,"reused":3,"pruned":0,'
     '"skipped":false,"state":"current"}\n'
     "\n"
+    "id: 3\n"
     "event: summary\n"
     'data: {"indexed":1,"skipped":0,"failed":0,"total_chunks":4,'
-    '"total_pruned":0,"statuses":[]}\n'
+    '"total_reused":3,"total_pruned":0,"statuses":[]}\n'
     "\n"
 )
 
 
 INDEX_SOURCES_RESPONSES: dict[int | str, dict[str, Any]] = {
-    200: {
-        "description": _INDEX_STREAM_DESCRIPTION,
+    202: {
+        "description": "The files were queued. Nothing has been embedded yet — "
+        "open the run's event stream to follow it.",
         "content": {
-            "text/event-stream": {
-                "schema": _EVENT_UNION_SCHEMA,
-                "example": _INDEX_STREAM_EXAMPLE,
+            "application/json": {
+                "example": {
+                    "job_id": "9f1c2ab4de7f5061",
+                    "accepted": ["policy.md"],
+                    "already_queued": [],
+                    "rejected": [],
+                    "missing": [],
+                    "limit": 50,
+                    "pending": ["policy.md"],
+                }
             }
         },
     },
@@ -296,6 +388,30 @@ INDEX_SOURCES_RESPONSES: dict[int | str, dict[str, Any]] = {
                     "detail": "chunk_overlap (512) must be smaller than "
                     "chunk_size (512); otherwise chunking cannot advance."
                 }
+            }
+        },
+    },
+}
+
+ATTACH_RUN_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": _INDEX_STREAM_DESCRIPTION,
+        "content": {
+            "text/event-stream": {
+                "schema": _EVENT_UNION_SCHEMA,
+                "example": _INDEX_STREAM_EXAMPLE,
+            }
+        },
+    },
+}
+
+STOP_RUN_RESPONSES: dict[int | str, dict[str, Any]] = {
+    404: {
+        "description": "No such run is still held in memory. A run that finished "
+        "long ago is in history rather than stoppable.",
+        "content": {
+            "application/json": {
+                "example": {"detail": "No such run: 9f1c2ab4de7f5061"}
             }
         },
     },

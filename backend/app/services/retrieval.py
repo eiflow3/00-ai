@@ -124,12 +124,16 @@ async def retrieve(
     # 4. Normalise the vendor response into our schema.
     chunks = [_to_retrieved_chunk(match) for match in matches]
 
-    # 5. Drop weak matches, then order best-first.
-    chunks = [c for c in chunks if c.score >= score_threshold]
+    # 5. Split on the threshold, then order each side best-first. The weak
+    #    matches are returned rather than discarded so a caller recording what
+    #    happened can show that the right passage was there and just missed.
     chunks.sort(key=lambda c: c.score, reverse=True)
+    kept = [c for c in chunks if c.score >= score_threshold]
+    dropped = [c for c in chunks if c.score < score_threshold]
 
     return RetrievalResult(
         query=query,
-        chunks=chunks,
+        chunks=kept,
+        dropped_chunks=dropped,
         total_searched=len(matches),
     )

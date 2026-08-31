@@ -6,18 +6,30 @@
  * typed events; everything else returns a parsed body.
  */
 
-import { postSse } from './sse'
+import { getSse, postSse } from './sse'
 import type {
   ChatEvent,
   ChatRequest,
   DeindexResponse,
+  EnqueueResponse,
+  Evaluation,
+  EvaluationOptions,
+  EvaluationRequest,
+  EvaluationTarget,
   IndexEvent,
+  IndexEventWithCursor,
   IndexRequest,
+  IndexRun,
   IndexState,
   ModelOption,
   SourceDetail,
   SourceStatus,
+  TraceDeleteResponse,
+  TraceDetail,
+  TracePage,
+  TraceState,
   UploadResponse,
+  Verdict,
 } from './types'
 
 /** Backend origin. Overridden per environment; the default matches `npm run app:api`. */
@@ -148,18 +160,73 @@ export function replaceSource(sourceKey: string, file: File): Promise<UploadResp
 }
 
 /**
- * Run the data embedding pipeline, yielding each progress event.
+ * Queue files for embedding and return the run they joined.
+ *
+ * Deliberately not a stream. The work used to be the response, which meant a
+ * reload cancelled it mid-file; now this only enqueues, and progress is read
+ * from `attachIndexRun`. One worker drains one queue, so calling this while a
+ * run is in flight adds to that run rather than starting another.
  *
  * With no `keys`, the run covers everything under `prefix` that needs it.
  */
-export async function* indexSources(
+export function enqueueIndex(
   body: IndexRequest,
   signal?: AbortSignal,
-): AsyncGenerator<IndexEvent> {
-  for await (const raw of postSse(url('/sources/index'), body, signal)) {
-    // Every event on this stream is named and carries a JSON payload.
-    yield { event: raw.event, data: JSON.parse(raw.data) } as IndexEvent
+): Promise<EnqueueResponse> {
+  return request<EnqueueResponse>(url('/sources/index'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
+/**
+ * List the run in flight, if any, followed by recent history.
+ *
+ * Asked on load: a live run carries the `job_id` needed to attach to its
+ * stream, which is how progress survives a reload.
+ */
+export function listIndexRuns(signal?: AbortSignal): Promise<IndexRun[]> {
+  return request<IndexRun[]>(url('/sources/index/runs'), { signal })
+}
+
+/**
+ * Follow one run's events, replaying whatever was missed.
+ *
+ * @param jobId - The run to follow.
+ * @param after - Cursor already seen. The default replays from the start,
+ *   which is what a client that just reloaded needs to rebuild its progress.
+ * @param signal - Aborting detaches the stream; the run itself keeps going.
+ */
+export async function* attachIndexRun(
+  jobId: string,
+  after = -1,
+  signal?: AbortSignal,
+): AsyncGenerator<IndexEventWithCursor> {
+  const target = url(`/sources/index/runs/${encodeURIComponent(jobId)}/events`, {
+    after: String(after),
+  })
+
+  for await (const raw of getSse(target, signal)) {
+    // Every event on this stream is named and carries a JSON payload, plus the
+    // cursor in its `id` field so a reconnect can resume from it.
+    yield {
+      event: { event: raw.event, data: JSON.parse(raw.data) } as IndexEvent,
+      cursor: raw.id === '' ? after : Number(raw.id),
+    }
   }
+}
+
+/**
+ * Stop a run, discarding whatever was still queued.
+ *
+ * Needed because a run no longer dies with the tab that started it.
+ */
+export function stopIndexRun(jobId: string): Promise<IndexRun> {
+  return request<IndexRun>(url(`/sources/index/runs/${encodeURIComponent(jobId)}`), {
+    method: 'DELETE',
+  })
 }
 
 /**
@@ -189,4 +256,137 @@ export async function* streamChat(
       yield { event: raw.event, data: JSON.parse(raw.data) } as ChatEvent
     }
   }
+}
+
+// --- Traces and evaluations -------------------------------------------------
+
+/** Filters accepted by the trace listing. */
+export interface TraceQuery {
+  limit?: number
+  offset?: number
+  model?: string
+  state?: TraceState
+  /** True for judged requests only, false for the unjudged backlog. */
+  evaluated?: boolean
+  verdict?: Verdict
+  target?: EvaluationTarget
+  /** Only requests that retrieved a chunk from this file. */
+  sourceKey?: string
+  search?: string
+  signal?: AbortSignal
+}
+
+/**
+ * List recorded chat requests, newest first.
+ *
+ * Every request is recorded, judged or not — a judgement is made later, by
+ * which time the index may have changed, so the evidence has to be captured
+ * when the answer was written.
+ */
+export function listTraces(query: TraceQuery = {}): Promise<TracePage> {
+  return request<TracePage>(
+    url('/traces', {
+      limit: query.limit?.toString(),
+      offset: query.offset ? query.offset.toString() : undefined,
+      model: query.model,
+      state: query.state,
+      // Only send `evaluated` when it is actually set: `false` is a filter in
+      // its own right, and must not be dropped as falsy.
+      evaluated: query.evaluated === undefined ? undefined : String(query.evaluated),
+      verdict: query.verdict,
+      target: query.target,
+      source_key: query.sourceKey,
+      search: query.search,
+    }),
+    { signal: query.signal },
+  )
+}
+
+/** List every model that has at least one recorded answer. */
+export function listTraceModels(signal?: AbortSignal): Promise<string[]> {
+  return request<string[]>(url('/traces/models'), { signal })
+}
+
+/**
+ * Fetch one request with its chunks and every judgement made on it.
+ *
+ * Unlike the listing, this includes withdrawn judgements — the detail view is
+ * where a change of mind is worth seeing.
+ */
+export function getTrace(traceId: string, signal?: AbortSignal): Promise<TraceDetail> {
+  return request<TraceDetail>(url(`/traces/${encodeURIComponent(traceId)}`), { signal })
+}
+
+/**
+ * Discard a request, its chunks and its judgements.
+ *
+ * The only hard delete in this API. Withdrawing a judgement keeps the record;
+ * this removes the evidence, and is meant for a request that should never have
+ * been recorded.
+ */
+export function deleteTrace(traceId: string): Promise<TraceDeleteResponse> {
+  return request<TraceDeleteResponse>(url(`/traces/${encodeURIComponent(traceId)}`), {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * Judge one stage of a recorded request.
+ *
+ * Judging the same stage again adds another verdict rather than replacing the
+ * first — the newest live one is what the row shows, and the earlier one stays
+ * readable on the trace.
+ *
+ * @throws ApiError - 404 if the trace has aged out, 400 if a tag does not
+ *   belong to the stage being judged.
+ */
+export function createEvaluation(
+  traceId: string,
+  body: EvaluationRequest,
+): Promise<Evaluation> {
+  return request<Evaluation>(url(`/traces/${encodeURIComponent(traceId)}/evaluations`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+/**
+ * List the verdicts and reason chips the evaluate control should offer.
+ *
+ * Fetched rather than hardcoded: reason codes a client invents produce
+ * judgements nothing can group.
+ */
+export function listEvaluationOptions(signal?: AbortSignal): Promise<EvaluationOptions> {
+  return request<EvaluationOptions>(url('/evaluations/options'), { signal })
+}
+
+/** Withdraw a judgement. The record stays, marked withdrawn. */
+export function withdrawEvaluation(
+  evaluationId: string,
+  reason = '',
+): Promise<Evaluation> {
+  return request<Evaluation>(url(`/evaluations/${encodeURIComponent(evaluationId)}`), {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+}
+
+/** Reinstate a withdrawn judgement. */
+export function restoreEvaluation(evaluationId: string): Promise<Evaluation> {
+  return request<Evaluation>(
+    url(`/evaluations/${encodeURIComponent(evaluationId)}/restore`),
+    { method: 'POST' },
+  )
+}
+
+/**
+ * Absolute URL of the JSONL export.
+ *
+ * Returned rather than fetched because the browser downloads it directly —
+ * routing a file through JavaScript would only add a copy in memory.
+ */
+export function evaluationExportUrl(): string {
+  return url('/evaluations/export')
 }

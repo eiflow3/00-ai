@@ -1,20 +1,23 @@
 /**
  * Application shell.
  *
- * Two screens, one for each direction of the pipeline: Sources puts files into
- * the index, Chat asks questions of it. Two screens do not justify a router.
+ * Three screens following the pipeline: Sources puts files into the index, Chat
+ * asks questions of it, and Evaluations is where those answers get judged
+ * against the chunks that produced them. Three screens do not justify a router.
  */
 
 import { useState } from 'react'
 
 import { ChatView } from './features/chat/ChatView'
 import { SourcesView } from './features/sources/SourcesView'
+import { TracesView } from './features/traces/TracesView'
 
-type Tab = 'sources' | 'chat'
+type Tab = 'sources' | 'chat' | 'evaluations'
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'sources', label: 'Sources' },
   { value: 'chat', label: 'Chat' },
+  { value: 'evaluations', label: 'Evaluations' },
 ]
 
 function App() {
@@ -42,7 +45,11 @@ function App() {
         </div>
       </nav>
 
-      <main>{tab === 'sources' ? <SourcesView /> : <ChatView />}</main>
+      <main>
+        {tab === 'sources' ? <SourcesView /> : null}
+        {tab === 'chat' ? <ChatView /> : null}
+        {tab === 'evaluations' ? <TracesView /> : null}
+      </main>
     </div>
   )
 }

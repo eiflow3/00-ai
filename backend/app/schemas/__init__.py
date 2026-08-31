@@ -18,6 +18,10 @@ from app.schemas.generation import GenerationRequest, GenerationResponse
 # --- Chat schemas ---
 from app.schemas.chat import ChatRequest
 
+# --- Trace and evaluation schemas ---
+from app.schemas.trace import Trace, TraceChunk, TraceDetail, TracePage
+from app.schemas.evaluation import Evaluation, EvaluationOptions, EvaluationRequest
+
 __all__ = [
     # Common
     "HealthResponse",
@@ -37,4 +41,12 @@ __all__ = [
     "GenerationResponse",
     # Chat
     "ChatRequest",
+    # Traces and evaluations
+    "Trace",
+    "TraceChunk",
+    "TraceDetail",
+    "TracePage",
+    "Evaluation",
+    "EvaluationOptions",
+    "EvaluationRequest",
 ]

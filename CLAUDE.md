@@ -13,3 +13,6 @@
 * Type-hint every public signature and name constants at module top instead of inlining them.
 * Keep OpenAPI docs in docs/, never inline in a route decorator.
 * Adding or changing a streamed event means updating its schema and the endpoint's docs module in the same change.
+* Never do long-running work inside a response: a request starts a job and returns its id, and progress is streamed from a separate endpoint that any client can reopen.
+* Derive progress from what the stores already hold rather than a job table — the index is the durable record of what was embedded, so a run resumes instead of starting over.
+* Log every pipeline stage and record every run in services/run_store.py; a run that leaves no trace cannot be debugged after the fact.

@@ -12,6 +12,7 @@ const REINDEXABLE: ReadonlySet<IndexState> = new Set<IndexState>([
   'not_indexed',
   'stale_content',
   'stale_model',
+  'interrupted',
 ])
 
 /**

@@ -31,6 +31,11 @@ const PRESENTATION: Record<IndexState, { label: string; mark: string; className:
     mark: '▲',
     className: 'bg-state-stale-soft text-state-stale',
   },
+  interrupted: {
+    label: 'Part indexed',
+    mark: '◐',
+    className: 'bg-state-orphaned-soft text-state-orphaned',
+  },
   not_indexed: {
     label: 'Not indexed',
     mark: '○',

@@ -17,10 +17,18 @@
  *      how the chat stream distinguishes answer text from metadata.
  */
 
-/** One decoded SSE event: its name, and its raw (still unparsed) data. */
+/** One decoded SSE event: its name, its raw (still unparsed) data, and its id. */
 export interface RawSseEvent {
   event: string
   data: string
+  /**
+   * The event's `id` field, empty when the server sent none.
+   *
+   * The indexing stream uses it as a cursor: pass the last one seen back as
+   * `after` on a reconnect and the stream resumes instead of replaying
+   * everything already received.
+   */
+  id: string
 }
 
 /** SSE's default event name, used when a frame carries no `event:` line. */
@@ -40,6 +48,7 @@ const LINE_SEPARATOR = /\r\n|\n|\r/
  */
 function parseFrame(frame: string): RawSseEvent | null {
   let event = DEFAULT_EVENT
+  let id = ''
   const dataLines: string[] = []
 
   for (const line of frame.split(LINE_SEPARATOR)) {
@@ -57,34 +66,37 @@ function parseFrame(frame: string): RawSseEvent | null {
     } else if (field === 'data') {
       // Accumulate: a multi-line payload spans several `data:` lines.
       dataLines.push(value)
+    } else if (field === 'id') {
+      id = value
     }
-    // `id` and `retry` are part of SSE but unused here.
+    // `retry` is part of SSE but unused here.
   }
 
   if (dataLines.length === 0) return null
 
-  return { event, data: dataLines.join('\n') }
+  return { event, data: dataLines.join('\n'), id }
 }
 
 /**
- * POST a JSON body and yield each SSE event as it arrives.
+ * Open an SSE stream with any request shape and yield each event as it arrives.
+ *
+ * Both request methods are needed: chat streams from a POST with a JSON body,
+ * while an indexing run is attached to with a GET so the same URL can be
+ * reopened after a reload. The framing is identical, so it is parsed in one
+ * place rather than twice.
  *
  * @param url - Absolute URL of the streaming endpoint.
- * @param body - JSON request body.
- * @param signal - Abort signal, used to cancel the stream.
+ * @param init - Fetch options. `Accept` is set for you.
  * @returns An async iterable of decoded events.
  * @throws If the response is not OK, carrying the server's `detail` when present.
  */
-export async function* postSse(
+export async function* openSse(
   url: string,
-  body: unknown,
-  signal?: AbortSignal,
+  init: RequestInit = {},
 ): AsyncGenerator<RawSseEvent> {
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify(body),
-    signal,
+    ...init,
+    headers: { Accept: 'text/event-stream', ...(init.headers ?? {}) },
   })
 
   // A failure before the stream opens comes back as a normal JSON error, so
@@ -131,4 +143,36 @@ export async function* postSse(
     // Releasing the lock lets the connection be torn down on abort.
     reader.releaseLock()
   }
+}
+
+/**
+ * POST a JSON body and yield each SSE event as it arrives.
+ *
+ * @param url - Absolute URL of the streaming endpoint.
+ * @param body - JSON request body.
+ * @param signal - Abort signal, used to cancel the stream.
+ * @returns An async iterable of decoded events.
+ */
+export function postSse(
+  url: string,
+  body: unknown,
+  signal?: AbortSignal,
+): AsyncGenerator<RawSseEvent> {
+  return openSse(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
+/**
+ * GET an SSE stream and yield each event as it arrives.
+ *
+ * @param url - Absolute URL of the streaming endpoint.
+ * @param signal - Abort signal, used to detach without stopping the work.
+ * @returns An async iterable of decoded events.
+ */
+export function getSse(url: string, signal?: AbortSignal): AsyncGenerator<RawSseEvent> {
+  return openSse(url, { method: 'GET', signal })
 }

@@ -27,6 +27,10 @@ from app.schemas.source import SourceObject
 # vector id readable in logs and in the Pinecone console.
 DOCUMENT_ID_LENGTH = 16
 
+# Length of a chunk's content fingerprint.  Short enough to read in a table,
+# wide enough that two different chunks will not collide.
+CONTENT_HASH_LENGTH = 16
+
 # Separator between the document id and the chunk index inside a vector id.
 # Chosen because it cannot appear in a hex digest, so parsing back is exact.
 VECTOR_ID_SEPARATOR = "#"
@@ -47,6 +51,13 @@ METADATA_SOURCE_ETAG = "source_etag"
 METADATA_SOURCE_LAST_MODIFIED = "source_last_modified"
 METADATA_EMBEDDED_AT = "embedded_at"
 
+# How many chunks the whole file should have.  Stamped on every chunk so that
+# comparing it against the number of vectors actually present detects a run
+# that stopped partway — a write that never finished, or a prune that never
+# ran.  Without it a half-written file is indistinguishable from a complete
+# one, because the fields above all describe the file, not the set of vectors.
+METADATA_CHUNK_TOTAL = "chunk_total"
+
 
 def document_id_for(source_key: str) -> str:
     """Derive the stable document id for an object key.
@@ -63,6 +74,23 @@ def document_id_for(source_key: str) -> str:
     """
     digest = hashlib.sha1(source_key.encode("utf-8")).hexdigest()
     return digest[:DOCUMENT_ID_LENGTH]
+
+
+def content_fingerprint(content: str) -> str:
+    """Fingerprint a chunk's text, so a later re-index can be told it changed.
+
+    A vector id names a *slot* — the same `{document_id}#{nnnnn}` holds
+    different text after a re-index at a different chunk size.  Anything that
+    records what a chunk said therefore has to record this alongside the id, or
+    it cannot tell a stable chunk from a silently replaced one.
+
+    Args:
+        content: The chunk's text.
+
+    Returns:
+        A short hex fingerprint of the text.
+    """
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:CONTENT_HASH_LENGTH]
 
 
 def vector_id_for(document_id: str, chunk_index: int) -> str:
@@ -145,6 +173,7 @@ def build_metadata(
     source: SourceObject,
     chunk_index: int,
     content: str,
+    chunk_total: int = 0,
     embedded_at: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Build the metadata stamped onto one chunk's vector.
@@ -154,10 +183,16 @@ def build_metadata(
     detection: comparing it against the object's current values is what reveals
     that a file changed after it was indexed.
 
+    `chunk_total` serves the other half of that question.  The fields above all
+    describe the *file*, so they cannot reveal that only some of its chunks were
+    written; the expected total can, because the number of vectors present is
+    already known from a prefix listing.
+
     Args:
         source: The object this chunk came from, as listed by the store.
         chunk_index: Zero-based position of the chunk within the file.
         content: The chunk's text, stored so retrieval can return it directly.
+        chunk_total: How many chunks the whole file produced.
         embedded_at: When the vector was produced; defaults to now.
 
     Returns:
@@ -170,6 +205,7 @@ def build_metadata(
         METADATA_SOURCE_KEY: source.key,
         METADATA_DOCUMENT_ID: document_id_for(source.key),
         METADATA_CHUNK_INDEX: chunk_index,
+        METADATA_CHUNK_TOTAL: chunk_total,
         METADATA_CONTENT: content,
         # Snapshot of the source at embed time; drives the staleness verdict.
         METADATA_SOURCE_ETAG: source.etag,

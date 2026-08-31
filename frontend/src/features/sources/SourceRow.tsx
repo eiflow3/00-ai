@@ -20,7 +20,15 @@ interface SourceRowProps {
   expanded: boolean
   /** True while a run — this session's or another's — is embedding this file. */
   busy: boolean
-  /** Disabled while any run is in flight, to keep runs from interleaving. */
+  /**
+   * True while the file waits its turn.
+   *
+   * Distinct from `busy`: one worker drains the queue, so a file is accepted
+   * long before anything starts happening to it, and showing a spinner during
+   * that wait would claim work that has not begun.
+   */
+  queued: boolean
+  /** Withheld while this file cannot usefully be acted on. */
   actionsDisabled: boolean
   onToggle: () => void
   onReindex: () => void
@@ -33,6 +41,7 @@ interface SourceRowProps {
 const ROW_ACCENT: Record<string, string> = {
   stale_content: 'border-l-state-stale',
   stale_model: 'border-l-state-stale',
+  interrupted: 'border-l-state-orphaned',
   orphaned: 'border-l-state-orphaned',
   current: 'border-l-state-current',
 }
@@ -41,6 +50,7 @@ export function SourceRow({
   status,
   expanded,
   busy,
+  queued,
   actionsDisabled,
   onToggle,
   onReindex,
@@ -129,6 +139,13 @@ export function SourceRow({
             <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-400">
               <Spinner />
               Indexing
+            </span>
+          ) : queued ? (
+            <span
+              title="Waiting for the worker to reach it."
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-400"
+            >
+              Queued
             </span>
           ) : canReindex ? (
             <button

@@ -9,6 +9,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 
 import { Citations } from './Citations'
+import { EvaluatePanel } from './EvaluatePanel'
 import { ModelPicker } from './ModelPicker'
 import { UsageBar } from './UsageBar'
 import type { ModelOption } from '../../api/types'
@@ -133,6 +134,9 @@ export function ChatView() {
           ) : null}
 
           {chat.usage ? <UsageBar usage={chat.usage} /> : null}
+
+          {/* The exchange is already recorded; this is where it gets judged. */}
+          <EvaluatePanel traceId={chat.traceId} streaming={chat.streaming} />
         </>
       ) : null}
     </div>

@@ -14,6 +14,13 @@ import type { ChatRequest, RetrievedChunk, UsageEventData } from '../api/types'
 export interface UseChatResult {
   /** The question the current answer belongs to. */
   question: string
+  /**
+   * Id this exchange is recorded under, available before the answer arrives.
+   *
+   * It is what an evaluation is filed against, so the evaluate control can be
+   * rendered as soon as the stream opens rather than after it closes.
+   */
+  traceId: string | null
   /** Chunks that grounded the answer, best score first. */
   citations: RetrievedChunk[]
   /** Answer text so far, appended delta by delta. */
@@ -36,6 +43,7 @@ export interface UseChatResult {
 
 export function useChat(): UseChatResult {
   const [question, setQuestion] = useState('')
+  const [traceId, setTraceId] = useState<string | null>(null)
   const [citations, setCitations] = useState<RetrievedChunk[]>([])
   const [answer, setAnswer] = useState('')
   const [usage, setUsage] = useState<UsageEventData | null>(null)
@@ -60,6 +68,7 @@ export function useChat(): UseChatResult {
     controller.current = abort
 
     setQuestion(trimmed)
+    setTraceId(null)
     setCitations([])
     setAnswer('')
     setUsage(null)
@@ -72,6 +81,11 @@ export function useChat(): UseChatResult {
     try {
       for await (const event of streamChat({ query: trimmed, ...options }, abort.signal)) {
         switch (event.event) {
+          case 'trace':
+            // Arrives first, before retrieval has even run.
+            setTraceId(event.data.trace_id)
+            break
+
           case 'retrieval':
             setCitations(event.data.chunks)
             setRetrieved(true)
@@ -115,6 +129,7 @@ export function useChat(): UseChatResult {
 
   return {
     question,
+    traceId,
     citations,
     answer,
     usage,

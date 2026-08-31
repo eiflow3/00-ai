@@ -74,6 +74,16 @@ class RetrievalResult(BaseModel):
         description="Retrieved chunks ordered by descending similarity score",
     )
 
+    # Matches the score threshold excluded from the result above.
+    #
+    # Kept rather than discarded because a near-miss is diagnostic: an answer
+    # that failed while the passage it needed sat just under the threshold is a
+    # tuning problem, and that is invisible if the chunk is simply dropped.
+    dropped_chunks: list[RetrievedChunk] = Field(
+        default_factory=list,
+        description="Matches excluded by the score threshold, best match first",
+    )
+
     # Total number of chunks that were searched.
     total_searched: int = Field(
         default=0,

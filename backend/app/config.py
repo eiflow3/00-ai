@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import AliasChoices, Field
 
@@ -52,6 +54,34 @@ class Settings(BaseSettings):
     # Largest file accepted through the upload endpoints.  Bounded because an
     # oversized document is an embedding bill, not just a large object.
     max_upload_bytes: int = 10 * 1024 * 1024
+
+    # How many files may be waiting to be embedded at once.  One worker drains
+    # the queue, so this bounds the backlog a few impatient clicks can build —
+    # every entry is an embedding bill waiting to be paid.
+    max_index_queue: int = 50
+
+    # Where run history and logs are written.  Relative to the backend package's
+    # parent, so it resolves the same however uvicorn was launched.
+    data_dir: Path = Path(__file__).resolve().parent.parent / "data"
+
+    @property
+    def run_history_path(self) -> Path:
+        """SQLite file holding the history of indexing runs."""
+        return self.data_dir / "runs.db"
+
+    @property
+    def trace_history_path(self) -> Path:
+        """SQLite file holding chat traces and the evaluations made on them.
+
+        Deliberately a different file from `run_history_path`: run history is
+        pruned on a fixed schedule, and an evaluated trace has to outlive that.
+        """
+        return self.data_dir / "traces.db"
+
+    @property
+    def log_path(self) -> Path:
+        """Rotating log file for the backend."""
+        return self.data_dir / "logs" / "backend.log"
 
     @property
     def r2_endpoint_url(self) -> str:

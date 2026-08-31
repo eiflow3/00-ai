@@ -63,6 +63,21 @@ def _compare(
     if indexed is None:
         return IndexState.NOT_INDEXED, "This file has never been embedded."
 
+    # A run that stopped partway outranks everything below, because those rules
+    # all assume the index holds a *complete* document.  It does not: the count
+    # recorded at embed time and the number of vectors actually present
+    # disagree, which means either a write stopped early or a prune never ran.
+    # Left unreported, the file would claim to be current — its first chunk
+    # carries the right fingerprint — while retrieval serves text from a
+    # version that no longer exists.  A total of zero predates this record and
+    # means "cannot tell", so it is not treated as a disagreement.
+    if indexed.chunk_total and indexed.chunk_count != indexed.chunk_total:
+        return (
+            IndexState.INTERRUPTED,
+            f"A previous run left {indexed.chunk_count} of "
+            f"{indexed.chunk_total} chunks indexed; re-index to complete it.",
+        )
+
     # The content check comes first because it is the common case and the one
     # the user asked to see.  The etag decides it, not the timestamp: object
     # storage bumps last-modified on any rewrite, including one that stores
@@ -114,9 +129,11 @@ def build_status(
         source=source,
         indexed=indexed,
         detail=detail,
-        # What is stored says `state`; what is happening says this. A file can
-        # read `not_indexed` while a run is midway through embedding it.
+        # What is stored says `state`; what is happening says these. A file can
+        # read `not_indexed` while a run is midway through embedding it, and
+        # waiting in the queue is not the same as being worked on.
         indexing=index_registry.is_indexing(key),
+        queued=index_registry.is_queued(key),
     )
 
 

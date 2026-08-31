@@ -17,6 +17,7 @@ from app.schemas.source import IndexedDocument, SourceChunk
 from app.services.embeddings import EMBEDDING_MODEL_METADATA_KEY
 from app.services.provenance import (
     METADATA_CHUNK_INDEX,
+    METADATA_CHUNK_TOTAL,
     METADATA_CONTENT,
     METADATA_EMBEDDED_AT,
     METADATA_SOURCE_ETAG,
@@ -38,6 +39,19 @@ def _metadata_of(record: dict[str, Any]) -> dict[str, Any]:
     """Pull the metadata dict out of a fetched vector record."""
     metadata = record.get("metadata") or {}
     return dict(metadata) if not isinstance(metadata, dict) else metadata
+
+
+def _as_int(value: Any) -> int:
+    """Read a metadata number as an int, treating anything unreadable as zero.
+
+    Pinecone returns numeric metadata as floats, and vectors written before a
+    field existed carry nothing at all.  Zero means "not recorded", which the
+    comparison rules treat as "cannot tell" rather than as a real count.
+    """
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 async def list_vector_ids_for(source_key: str) -> list[str]:
@@ -79,6 +93,9 @@ async def get_indexed_document(source_key: str) -> Optional[IndexedDocument]:
         source_key=str(metadata.get(METADATA_SOURCE_KEY) or source_key),
         document_id=document_id_for(source_key),
         chunk_count=len(ids),
+        # What the last run said this file should have, against what it does
+        # have. A disagreement is how an interrupted run becomes visible.
+        chunk_total=_as_int(metadata.get(METADATA_CHUNK_TOTAL)),
         embedded_at=to_datetime(metadata.get(METADATA_EMBEDDED_AT)),
         source_last_modified=to_datetime(metadata.get(METADATA_SOURCE_LAST_MODIFIED)),
         source_etag=str(metadata.get(METADATA_SOURCE_ETAG) or ""),
@@ -172,6 +189,24 @@ async def delete_document(source_key: str) -> int:
         return 0
 
     return await asyncio.to_thread(delete_vectors, ids)
+
+
+async def prune_vectors(vector_ids: list[str]) -> int:
+    """Delete a named set of vectors.
+
+    Used by an indexing run to remove exactly the vectors its plan identified
+    as obsolete, rather than inferring them from a chunk count.
+
+    Args:
+        vector_ids: The ids to remove.
+
+    Returns:
+        How many vectors were deleted.
+    """
+    if not vector_ids:
+        return 0
+
+    return await asyncio.to_thread(delete_vectors, vector_ids)
 
 
 async def prune_chunks_beyond(source_key: str, chunk_count: int) -> int:

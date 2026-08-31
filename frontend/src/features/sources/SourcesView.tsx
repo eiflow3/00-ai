@@ -27,11 +27,15 @@ const FILTERS: { value: IndexState | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'stale_content', label: 'Changed' },
   { value: 'not_indexed', label: 'Not indexed' },
+  { value: 'interrupted', label: 'Part indexed' },
   { value: 'current', label: 'Current' },
   { value: 'orphaned', label: 'Orphaned' },
 ]
 
-/** How often to re-read the list while some file is being embedded elsewhere. */
+/**
+ * How often to re-read the list while work is in flight that this tab is not
+ * streaming — another tab's run, or this one before it has attached.
+ */
 const INDEXING_POLL_MS = 3000
 
 /** A replace waiting on the user, because the chosen file has a different name. */
@@ -57,10 +61,11 @@ export function SourcesView() {
   // A new file is not in the table yet, so re-read rather than merging it in.
   const upload = useUpload(refresh)
 
-  // A run started elsewhere — another tab, another session — only shows up on
-  // a re-read, so poll while one is in flight rather than leaving the row
-  // stuck on "Indexing" until someone presses Refresh.
-  const watching = sources.some((status) => status.indexing)
+  // Poll only when work is in flight that this tab is *not* streaming. Holding
+  // the stream already delivers every change the poll would find, so polling
+  // alongside it asks a question that is already being answered.
+  const watching =
+    !run.running && sources.some((status) => status.indexing || status.queued)
 
   useEffect(() => {
     if (!watching) return
@@ -69,9 +74,12 @@ export function SourcesView() {
     return () => clearInterval(timer)
   }, [watching, refresh])
 
-  // Files worth indexing: stale, and not already being embedded elsewhere.
+  // Files worth indexing: stale, and not already queued or being embedded.
   const staleCount = useMemo(
-    () => sources.filter((status) => needsReindex(status.state) && !status.indexing).length,
+    () =>
+      sources.filter(
+        (status) => needsReindex(status.state) && !status.indexing && !status.queued,
+      ).length,
     [sources],
   )
 
@@ -140,8 +148,8 @@ export function SourcesView() {
           </button>
           <button
             type="button"
-            onClick={() => run.start({ only_stale: true })}
-            disabled={run.running || staleCount === 0}
+            onClick={() => void run.enqueue({ only_stale: true })}
+            disabled={staleCount === 0}
             className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-30"
           >
             Index {staleCount > 0 ? `${staleCount} ` : ''}stale
@@ -177,11 +185,15 @@ export function SourcesView() {
         running={run.running}
         progress={run.progress}
         queued={run.queued}
-        busy={run.busy}
+        pending={run.pending}
         failures={run.failures}
         summary={run.summary}
+        reused={run.reused}
+        rejected={run.rejected}
+        limit={run.limit}
         error={run.error}
-        onCancel={run.cancel}
+        resumed={run.resumed}
+        onStop={() => void run.stop()}
         onDismiss={run.reset}
       />
 
@@ -229,11 +241,14 @@ export function SourcesView() {
                   status={status}
                   expanded={expanded === status.source_key}
                   // Either this session is on that file, or the server says
-                  // some other run is — both mean "leave it alone".
+                  // a run is — both mean "leave it alone".
                   busy={run.progress?.sourceKey === status.source_key || status.indexing}
-                  actionsDisabled={run.running}
+                  queued={status.queued}
+                  // A run in flight can be joined, so a row is only withheld
+                  // when the pipeline is actually holding that file.
+                  actionsDisabled={false}
                   onToggle={() => toggle(status.source_key)}
-                  onReindex={() => run.start({ keys: [status.source_key] })}
+                  onReindex={() => void run.enqueue({ keys: [status.source_key] })}
                   onDeindex={() => void handleDeindex(status.source_key)}
                   onReplace={(file) => handleReplace(status.source_key, file)}
                 />

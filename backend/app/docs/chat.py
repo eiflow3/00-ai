@@ -17,11 +17,13 @@ from app.schemas.chat import (
     ChatStreamErrorEvent,
     ChatStreamMessageEvent,
     ChatStreamRetrievalEvent,
+    ChatStreamTraceEvent,
     ChatStreamUsageEvent,
 )
 
 # Every event shape the stream can emit, in the order they can occur.
 _EVENT_MODELS = (
+    ChatStreamTraceEvent,
     ChatStreamErrorEvent,
     ChatStreamRetrievalEvent,
     ChatStreamMessageEvent,
@@ -71,6 +73,7 @@ A `text/event-stream` of SSE events. Emitted in this order:
 
 | Event | Occurrences | Payload |
 | --- | --- | --- |
+| `trace` | exactly 1, always first | The id this request is being recorded under. |
 | `error` | 0 or more | Which pipeline stage failed, and why. |
 | `retrieval` | exactly 1 | The chunks that ground the answer, each with its similarity score. |
 | *(unnamed)* | 0 or more | One delta of answer text. Has no `event:` line, so it arrives as SSE's default `message` type. |
@@ -78,6 +81,12 @@ A `text/event-stream` of SSE events. Emitted in this order:
 
 **Guarantees**
 
+* `trace` is the first event on the wire, sent before retrieval runs and before
+  anything can fail. Every request is recorded — question, retrieved chunks and
+  answer — so that it can be judged later; the id is how a client files that
+  judgement (`POST /traces/{trace_id}/evaluations`) and how it reads the
+  evidence back (`GET /traces/{trace_id}`). A client that never evaluates can
+  ignore it.
 * `retrieval` always arrives before the first text delta, so a client can render
   citations while the answer is still streaming. It is sent even when retrieval
   is disabled or matched nothing — with an empty `chunks` list.
@@ -98,6 +107,9 @@ A `text/event-stream` of SSE events. Emitted in this order:
 
 # A representative stream, shown in the docs UI.
 _STREAM_EXAMPLE = (
+    'event: trace\n'
+    'data: {"trace_id":"9f2c4a1b8e7d4c2fa0b1c2d3e4f5a6b7"}\n'
+    '\n'
     'event: retrieval\n'
     'data: {"query":"What is the refund window?","chunks":[{"chunk_id":"c1",'
     '"document_id":"d7","content":"Refunds are accepted within 30 days.",'

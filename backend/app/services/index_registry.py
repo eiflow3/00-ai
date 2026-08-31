@@ -1,98 +1,170 @@
-"""Registry of files currently being indexed.
+"""Registry of the indexing work the pipeline is holding.
 
-Two indexing runs on the same file are not merely wasteful — they interleave
-badly. One run can upsert eight chunks while another, working from a shorter
-version of the same file, prunes everything past chunk three. The result is an
-index that matches neither version.
+Two questions get asked of this module, from opposite directions:
 
-So a run claims the keys it is about to process, and anything already claimed is
-left alone. The claim lives in memory, which is the right scope for a single
-process: the state is only meaningful while the run holding it is alive, and it
-should not survive a restart that killed that run. Running more than one worker
-or instance would move this to Redis — nothing else about the design changes.
+  * the worker asks *what should I do next* — the pending queue;
+  * every status row asks *is anything happening to this file* — so a row can
+    read "Queued" or "Indexing" rather than silently misreporting what is
+    stored as what is happening.
+
+Both are the same state, so they live together.  Keeping them here rather than
+in the queue's worker module is what lets `sync_status` read them without
+importing the worker that depends on it.
+
+One worker drains the queue, so a file is in exactly one of three positions:
+pending, in flight, or absent.  That ordering is also why two runs can no
+longer interleave their writes on one file — the situation the earlier
+claim-based design existed to prevent — but the in-flight marker is kept
+because it is what tells a client which row is actually being embedded.
+
+The state lives in memory, which is the right scope for a single process: it is
+only meaningful while the worker holding it is alive, and it must not survive a
+restart that killed that worker.  A second worker or instance would move this
+to Redis; nothing else about the design changes.
 """
 
 import asyncio
 import time
+from typing import Optional
 
-# How long a claim may stand before it is treated as abandoned.  A run that
-# died without releasing its keys would otherwise lock them out forever; this
-# is a backstop, not the normal path, which releases in a finally block.
+# How long an in-flight marker may stand before it is treated as abandoned.  A
+# worker killed without releasing its file would otherwise lock it out forever;
+# this is a backstop, not the normal path, which releases in a finally block.
 CLAIM_TIMEOUT_SECONDS = 30 * 60
 
-# Key -> monotonic timestamp the claim was made.
-_claims: dict[str, float] = {}
 
-# Guards the claim table.  Claiming has to be atomic across the whole batch,
-# otherwise two runs starting together can both believe they won the same key.
+class QueueFull(RuntimeError):
+    """Raised when accepting more files would exceed the configured limit.
+
+    Carries a message written for the person who clicked, since it is shown to
+    them verbatim.
+    """
+
+
+# Files waiting their turn, in the order they were accepted.
+_pending: list[str] = []
+
+# The file being embedded right now, and when it was picked up.
+_in_flight: Optional[str] = None
+_in_flight_at: float = 0.0
+
+# Guards both. Accepting a batch has to be atomic across the whole batch, or two
+# concurrent requests can both believe they fitted inside the limit.
 _lock = asyncio.Lock()
 
 
-def _expired(claimed_at: float, now: float) -> bool:
-    """Whether a claim is old enough to be treated as abandoned."""
-    return now - claimed_at > CLAIM_TIMEOUT_SECONDS
+def _expired() -> bool:
+    """Whether the in-flight marker is old enough to be treated as abandoned."""
+    if _in_flight is None:
+        return False
+    # monotonic, not wall clock: a system clock change must not expire it.
+    return time.monotonic() - _in_flight_at > CLAIM_TIMEOUT_SECONDS
 
 
-def _live_claims(now: float) -> dict[str, float]:
-    """Drop abandoned claims and return what remains."""
-    for key, claimed_at in list(_claims.items()):
-        if _expired(claimed_at, now):
-            del _claims[key]
-    return _claims
-
-
-async def claim(keys: list[str]) -> tuple[list[str], list[str]]:
-    """Take exclusive hold of the keys that are free.
+async def enqueue(keys: list[str], limit: int) -> tuple[list[str], list[str], list[str]]:
+    """Accept files onto the queue, up to the limit.
 
     Args:
-        keys: The keys a run intends to process.
+        keys: The files a caller wants indexed, in the order given.
+        limit: Most files that may be pending at once.
 
     Returns:
-        The keys this caller now holds, and the keys another run already holds,
-        both in the order they were given.
+        Three lists: the keys accepted, the keys already queued or in flight,
+        and the keys refused because the queue is full.
     """
-    # monotonic, not wall clock: a system clock change must not expire claims.
-    now = time.monotonic()
-
     async with _lock:
-        live = _live_claims(now)
-
-        claimed: list[str] = []
-        busy: list[str] = []
+        accepted: list[str] = []
+        already: list[str] = []
+        refused: list[str] = []
 
         for key in keys:
-            if key in live:
-                busy.append(key)
+            # Re-clicking Index on a file that is already waiting is a no-op,
+            # not a second entry — otherwise a queue fills with duplicates and
+            # the same file is embedded twice in a row.
+            if key in _pending or key == _in_flight:
+                already.append(key)
+            elif len(_pending) >= limit:
+                refused.append(key)
             else:
-                live[key] = now
-                claimed.append(key)
+                _pending.append(key)
+                accepted.append(key)
 
-    return claimed, busy
+        return accepted, already, refused
 
 
-async def release(keys: list[str]) -> None:
-    """Give up the claims held on these keys.
+async def dequeue() -> Optional[str]:
+    """Take the next file off the queue and mark it in flight.
 
-    Args:
-        keys: Keys previously returned as claimed. Unknown keys are ignored, so
-            a release can be called unconditionally from a finally block.
+    Returns:
+        The next key, or None when the queue is empty.
     """
+    global _in_flight, _in_flight_at
+
     async with _lock:
-        for key in keys:
-            _claims.pop(key, None)
+        if not _pending:
+            _in_flight = None
+            return None
+
+        _in_flight = _pending.pop(0)
+        _in_flight_at = time.monotonic()
+        return _in_flight
+
+
+def release() -> None:
+    """Let go of the file in flight.
+
+    Synchronous, and deliberately lock-free: it is called from the worker's
+    `finally`, which may already be unwinding a cancellation — and awaiting a
+    lock there raises again, leaving a row reading "Indexing" forever. Clearing
+    a single reference needs no lock to be correct.
+    """
+    global _in_flight
+
+    _in_flight = None
+
+
+def clear() -> list[str]:
+    """Drop every pending file and release the one in flight.
+
+    Lock-free for the same reason as `release`: it is the Stop path, and it must
+    work while the worker is being torn down.
+
+    Returns:
+        The keys that were still waiting, so a caller can report what it
+        cancelled rather than only that it cancelled something.
+    """
+    global _in_flight
+
+    dropped = list(_pending)
+    _pending.clear()
+    _in_flight = None
+    return dropped
 
 
 def is_indexing(source_key: str) -> bool:
-    """Whether a run currently holds this key.
+    """Whether this file is being embedded right now.
 
     Synchronous so it can be called while building a status row, which happens
     per file and must not need the lock.
     """
-    claimed_at = _claims.get(source_key)
-    return claimed_at is not None and not _expired(claimed_at, time.monotonic())
+    return _in_flight == source_key and not _expired()
+
+
+def is_queued(source_key: str) -> bool:
+    """Whether this file is waiting its turn."""
+    return source_key in _pending
+
+
+def pending() -> list[str]:
+    """Every file waiting, in queue order."""
+    return list(_pending)
 
 
 def in_flight() -> set[str]:
-    """Every key currently held by a run."""
-    now = time.monotonic()
-    return {key for key, at in _claims.items() if not _expired(at, now)}
+    """The file being embedded, as a set so callers can test membership."""
+    return set() if _in_flight is None or _expired() else {_in_flight}
+
+
+def depth() -> int:
+    """How many files are waiting, not counting the one in flight."""
+    return len(_pending)

@@ -18,6 +18,7 @@ export type IndexState =
   | 'current'
   | 'stale_content'
   | 'stale_model'
+  | 'interrupted'
   | 'orphaned'
   | 'unsupported'
 
@@ -43,6 +44,13 @@ export interface IndexedDocument {
   /** Stable id derived from the source key; prefixes every vector id. */
   document_id: string
   chunk_count: number
+  /**
+   * How many chunks the last run said the file should have.
+   *
+   * Compared against `chunk_count` by the backend to detect a run that stopped
+   * partway. Zero on vectors written before this was recorded.
+   */
+  chunk_total: number
   /** ISO timestamp of when the vectors were written. */
   embedded_at: string | null
   /** The object's last-modified time as it was at embedding time. */
@@ -69,6 +77,13 @@ export interface SourceStatus {
    * `not_indexed` while its very first embeddings are still being built.
    */
   indexing: boolean
+  /**
+   * Whether the file is waiting its turn.
+   *
+   * One worker drains the queue, so a file is accepted long before anything
+   * starts happening to it. Showing "Indexing" during that wait would be a lie.
+   */
+  queued: boolean
 }
 
 /** One indexed chunk, as stored in the vector index. */
@@ -109,9 +124,9 @@ export interface DeindexResponse {
   deleted: number
 }
 
-// --- Index run: POST /sources/index stream ----------------------------------
+// --- Index runs: enqueue, attach, stop --------------------------------------
 
-/** Request body for running the data embedding pipeline. */
+/** Request body for queueing files for embedding. */
 export interface IndexRequest {
   /** Specific keys to index. Empty means "everything under prefix that needs it". */
   keys?: string[]
@@ -120,20 +135,81 @@ export interface IndexRequest {
   force?: boolean
 }
 
+/** Where a run stands. Every state but `running` is terminal. */
+export type IndexRunState =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  /** The server stopped while this run was in flight. */
+  | 'abandoned'
+
+/**
+ * One indexing run, live or finished.
+ *
+ * Asked for on load: a run in flight carries the `job_id` needed to attach to
+ * its stream, which is how progress survives a reload.
+ */
+export interface IndexRun {
+  job_id: string
+  state: IndexRunState
+  /** Keys still waiting, in queue order. */
+  pending: string[]
+  /** Key being embedded right now, empty when none is. */
+  current: string
+  /** Files this run has taken on. Grows when a later request joins the run. */
+  total: number
+  indexed: number
+  skipped: number
+  failed: number
+  /** Chunks the run did not have to embed. */
+  total_reused: number
+  started_at: string | null
+  finished_at: string | null
+  error: string
+  /** Cursor of the last event emitted; pass as `after` to resume a stream. */
+  last_cursor: number
+}
+
+/** Result of asking for files to be indexed. The request only enqueues. */
+export interface EnqueueResponse {
+  /** The run the accepted files joined — new, or one already in flight. */
+  job_id: string
+  accepted: string[]
+  /** Already queued or being embedded. Not an error, just redundant. */
+  already_queued: string[]
+  /** Refused because the queue is full. */
+  rejected: string[]
+  /** Named keys with no object behind them. */
+  missing: string[]
+  /** The configured ceiling, so a rejection can be explained without hardcoding it. */
+  limit: number
+  pending: string[]
+}
+
 export type IndexStage = 'loading' | 'chunking' | 'embedding' | 'upserting'
 
 export interface IndexStartedEventData {
+  /** The run this stream reports on. Kept so a reload can ask for it again. */
+  job_id: string
   keys: string[]
   total: number
   embedding_model: string
-  /** Keys skipped because another run is already embedding them. */
-  busy: string[]
+}
+
+/** Sent when a later request joins a run already in flight. */
+export interface IndexQueuedEventData {
+  added: string[]
+  pending: string[]
+  /** Files the run has taken on in total — the denominator for a progress bar. */
+  total: number
 }
 
 export interface IndexProgressEventData {
   source_key: string
   stage: IndexStage
   file_number: number
+  /** Can grow mid-run, so read it from the latest event rather than caching it. */
   total_files: number
   chunk_count: number
 }
@@ -141,6 +217,11 @@ export interface IndexProgressEventData {
 export interface IndexCompletedEventData {
   source_key: string
   chunk_count: number
+  /**
+   * Chunks that did not need re-embedding, because the index already held them
+   * identically. Non-zero means an interrupted run was resumed, not repeated.
+   */
+  reused: number
   pruned: number
   skipped: boolean
   state: IndexState
@@ -157,6 +238,8 @@ export interface IndexSummaryEventData {
   skipped: number
   failed: number
   total_chunks: number
+  /** Chunks the run did not have to embed — the measure of what resuming saved. */
+  total_reused: number
   total_pruned: number
   /** Each processed file's state, re-read from both sides after the run. */
   statuses: SourceStatus[]
@@ -165,10 +248,17 @@ export interface IndexSummaryEventData {
 /** Every event the indexing stream can emit, discriminated by `event`. */
 export type IndexEvent =
   | { event: 'started'; data: IndexStartedEventData }
+  | { event: 'queued'; data: IndexQueuedEventData }
   | { event: 'progress'; data: IndexProgressEventData }
   | { event: 'completed'; data: IndexCompletedEventData }
   | { event: 'error'; data: IndexErrorEventData }
   | { event: 'summary'; data: IndexSummaryEventData }
+
+/** An event with the cursor it arrived under, so a reconnect can resume. */
+export interface IndexEventWithCursor {
+  event: IndexEvent
+  cursor: number
+}
 
 // --- Chat: POST /chat stream ------------------------------------------------
 
@@ -249,9 +339,179 @@ export interface ChatRequest {
  *
  * Text deltas arrive with no `event:` line, so they surface as SSE's default
  * `message` type — that is what distinguishes answer text from metadata.
+ *
+ * `trace` arrives first, before retrieval runs, carrying the id this request is
+ * being recorded under. It is what an evaluation is later filed against.
  */
 export type ChatEvent =
+  | { event: 'trace'; data: TraceEventData }
   | { event: 'message'; data: string }
   | { event: 'retrieval'; data: RetrievalEventData }
   | { event: 'error'; data: ChatErrorEventData }
   | { event: 'usage'; data: UsageEventData }
+
+// --- Traces: the recorded evidence behind each answer -----------------------
+
+/** How a chat request ended. */
+export type TraceState = 'completed' | 'failed' | 'cancelled'
+
+/**
+ * One chunk as it was at answer time.
+ *
+ * The text is stored, not referenced. Chunk ids are positional, so a re-index
+ * at a different chunk size leaves the same id pointing at different text —
+ * a trace that kept only ids would quietly start describing a different answer.
+ */
+export interface TraceChunk {
+  /** Position in the ranked results, best first. */
+  rank: number
+  chunk_id: string
+  document_id: string
+  source_key: string
+  score: number
+  content: string
+  /** Fingerprint of the text, so a later re-index can be told it changed. */
+  content_hash: string
+  char_count: number
+  /** True when the score threshold kept this chunk out of the prompt. */
+  dropped: boolean
+}
+
+/** One recorded chat request, without its chunks or judgements. */
+export interface Trace {
+  trace_id: string
+  created_at: string
+  question: string
+  answer: string
+
+  provider: string
+  model: string
+  temperature: number
+  system_prompt: string
+
+  use_rag: boolean
+  top_k: number
+  score_threshold: number
+  embedding_model: string
+  total_searched: number
+  /** Chunks that reached the prompt — dropped ones are not counted here. */
+  chunk_count: number
+  top_score: number
+
+  state: TraceState
+  error_stage: string
+  error_message: string
+
+  retrieval_ms: number
+  generation_ms: number
+  total_ms: number
+  input_tokens: number
+  output_tokens: number
+  total_cost: number
+
+  /** Live judgements on this trace. */
+  evaluation_count: number
+  /** Latest live verdict per target, e.g. `{ retrieval: 'good' }`. */
+  verdicts: Partial<Record<EvaluationTarget, Verdict>>
+}
+
+/** One trace with everything attached — including withdrawn judgements. */
+export interface TraceDetail {
+  trace: Trace
+  chunks: TraceChunk[]
+  evaluations: Evaluation[]
+}
+
+export interface TracePage {
+  traces: Trace[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface TraceDeleteResponse {
+  trace_id: string
+  deleted: boolean
+}
+
+// --- Evaluations: the judgements made on those requests ---------------------
+
+/**
+ * Which stage a judgement is about.
+ *
+ * This is what turns "the answer was wrong" into something actionable — the
+ * whole reason the chunks are kept alongside the answer.
+ */
+export type EvaluationTarget = 'retrieval' | 'generation' | 'overall'
+
+export type Verdict = 'good' | 'partial' | 'bad'
+
+/** Who judged it. Recorded so a machine judge never reads as a human one. */
+export type EvaluationAuthor = 'human' | 'llm' | 'code'
+
+export interface Evaluation {
+  id: string
+  trace_id: string
+  target: EvaluationTarget
+  verdict: Verdict
+  /** Preset reason ids, all belonging to `target`. */
+  tags: string[]
+  note: string
+  author: EvaluationAuthor
+  created_at: string
+  /**
+   * Whether the judgement has been withdrawn.
+   *
+   * Withdrawn judgements are kept: the evidence is still evidence, and a
+   * change of mind is itself worth reading.
+   */
+  deleted: boolean
+  deleted_at: string | null
+  deleted_reason: string
+}
+
+/** Request body for judging one stage of a trace. */
+export interface EvaluationRequest {
+  target: EvaluationTarget
+  verdict: Verdict
+  tags?: string[]
+  note?: string
+}
+
+export interface VerdictOption {
+  id: Verdict
+  label: string
+  hint: string
+}
+
+/** One reason chip, scoped to the stage it can explain. */
+export interface TagOption {
+  id: string
+  label: string
+  target: EvaluationTarget
+  hint: string
+}
+
+/**
+ * The vocabulary an evaluation is written in.
+ *
+ * Served by the backend rather than hardcoded here for the same reason the
+ * model list is: reason codes each client invents cannot be counted.
+ */
+export interface EvaluationOptions {
+  verdicts: VerdictOption[]
+  tags: TagOption[]
+  targets: EvaluationTarget[]
+}
+
+export interface EvaluationPage {
+  evaluations: Evaluation[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** Payload of the chat stream's first event. */
+export interface TraceEventData {
+  trace_id: string
+}

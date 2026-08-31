@@ -7,28 +7,32 @@ storage-versus-index comparison, the chunking, and the embedding all live in
 app.services.
 """
 
-import json
+import logging
 from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
-from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from app.config import settings
 from app.docs.sources import (
+    ATTACH_RUN_DESCRIPTION,
+    ATTACH_RUN_RESPONSES,
     DEINDEX_DESCRIPTION,
     GET_SOURCE_DESCRIPTION,
     GET_SOURCE_RESPONSES,
     INDEX_SOURCES_DESCRIPTION,
     INDEX_SOURCES_RESPONSES,
+    LIST_RUNS_DESCRIPTION,
     LIST_SOURCES_DESCRIPTION,
     REPLACE_DESCRIPTION,
     REPLACE_RESPONSES,
     SOURCES_TAG,
+    STOP_RUN_DESCRIPTION,
+    STOP_RUN_RESPONSES,
     UPLOAD_DESCRIPTION,
     UPLOAD_RESPONSES,
 )
-from app.schemas.ingestion import IndexRequest
+from app.schemas.ingestion import EnqueueResponse, IndexRequest, IndexRun
 from app.schemas.source import (
     DeindexResponse,
     IndexState,
@@ -36,19 +40,34 @@ from app.schemas.source import (
     SourceStatus,
     UploadResponse,
 )
-from app.services import index_catalog, ingestion, sync_status, uploads
+from app.services import index_catalog, index_queue, sync_status, uploads
 from app.services.uploads import UploadRejected
+
+logger = logging.getLogger(__name__)
+
+# How many recent runs the runs listing returns.
+RECENT_RUNS_LIMIT = 10
 
 router = APIRouter(prefix="/sources", tags=[SOURCES_TAG])
 
 
-def _sse(event: BaseModel) -> dict:
-    """Serialise a typed stream event into the dict sse-starlette expects.
+def _sse(cursor: int, event: object) -> dict:
+    """Serialise one stream event into the dict sse-starlette expects.
 
-    Going through the schema models keeps every event's payload defined in one
-    place — the same models the OpenAPI docs describe.
+    The cursor rides along as the SSE `id` field, which is what a client passes
+    back as `after` when it re-attaches — so a reconnect resumes rather than
+    replaying everything it already has.
+
+    Two shapes arrive here. A live event is a schema model, so its payload is
+    dumped from the same models the OpenAPI docs describe. An event replayed
+    from run history is already serialised JSON, and re-parsing it only to dump
+    it again would be work for no gain.
     """
-    return {"event": event.event, "data": event.data.model_dump_json()}
+    payload = getattr(event, "payload", None)
+    if payload is None:
+        payload = event.data.model_dump_json()
+
+    return {"id": str(cursor), "event": str(event.event), "data": payload}
 
 
 @router.get(
@@ -83,21 +102,32 @@ async def list_sources(
 
 @router.post(
     "/index",
-    summary="Run the data embedding pipeline",
-    response_description="SSE stream of the run's progress, ending with a summary.",
+    response_model=EnqueueResponse,
+    status_code=202,
+    summary="Queue files for embedding",
+    response_description="The run the files joined, and what was accepted.",
     description=INDEX_SOURCES_DESCRIPTION,
     responses=INDEX_SOURCES_RESPONSES,
 )
-async def index_sources(body: IndexRequest):
-    """Embed source files into the vector index, streaming progress.
+async def index_sources(body: IndexRequest) -> EnqueueResponse:
+    """Queue files for embedding and return the run they joined.
 
-    1. Decides which files to process — the named keys, or whatever is stale.
-    2. For each: loads it, splits it into chunks, embeds them, upserts them.
-    3. Prunes chunks a shrinking file no longer produces.
-    4. Closes with a summary carrying each file's re-read status.
+    Deliberately does not stream. The work used to be the response itself,
+    which meant a client reloading cancelled it mid-file; now the request only
+    enqueues, and progress is read from the run's own stream. That also puts
+    validation back where it belongs — once an SSE response opens, its status
+    code has already been sent and a bad request cannot be reported.
+
+    Args:
+        body: Which files to index, and how to chunk and embed them.
+
+    Returns:
+        The run id to stream from, plus what was accepted, already queued,
+        refused for the queue limit, or missing from storage.
+
+    Raises:
+        HTTPException: 400 if the chunk geometry cannot make progress.
     """
-    # Reject an impossible chunk geometry before the stream opens: once SSE has
-    # started, the status code is already sent and cannot report a bad request.
     if body.chunk_overlap >= body.chunk_size:
         raise HTTPException(
             status_code=400,
@@ -107,12 +137,92 @@ async def index_sources(body: IndexRequest):
             ),
         )
 
+    return await index_queue.enqueue(body)
+
+
+@router.get(
+    "/index/runs",
+    response_model=list[IndexRun],
+    summary="List indexing runs, live and recent",
+    response_description="The run in flight, if any, followed by recent history.",
+    description=LIST_RUNS_DESCRIPTION,
+)
+async def list_runs() -> list[IndexRun]:
+    """List the run in flight and recent finished ones.
+
+    This is what a client asks on load: if a run is in flight it holds the id
+    needed to attach to its stream, which is how progress survives a reload.
+
+    Returns:
+        The live run first, then history newest-first.
+    """
+    return await index_queue.recent(RECENT_RUNS_LIMIT)
+
+
+@router.get(
+    "/index/runs/{job_id}/events",
+    summary="Stream one run's progress",
+    response_description="SSE stream of the run's events, ending with a summary.",
+    description=ATTACH_RUN_DESCRIPTION,
+    responses=ATTACH_RUN_RESPONSES,
+)
+async def stream_run(
+    job_id: str,
+    after: int = Query(
+        default=-1,
+        description="Cursor already seen; everything past it is replayed first",
+    ),
+):
+    """Follow one run's events, replaying what the client missed.
+
+    The only streaming endpoint here, used identically for a run just started
+    and one being returned to — so there is one framing path rather than two
+    that have to behave the same.
+
+    Args:
+        job_id: The run to follow.
+        after: Cursor already seen. The default replays from the beginning,
+            which is what a client that just reloaded wants.
+    """
+
     async def event_generator() -> AsyncIterator[dict]:
-        """Serialise each event the pipeline yields."""
-        async for event in ingestion.run(body):
-            yield _sse(event)
+        """Serialise each event the run yields."""
+        async for cursor, event in index_queue.subscribe(job_id, after):
+            yield _sse(cursor, event)
 
     return EventSourceResponse(event_generator())
+
+
+@router.delete(
+    "/index/runs/{job_id}",
+    response_model=IndexRun,
+    summary="Stop a run and clear its queue",
+    response_description="The run as it stands after being stopped.",
+    description=STOP_RUN_DESCRIPTION,
+    responses=STOP_RUN_RESPONSES,
+)
+async def stop_run(job_id: str) -> IndexRun:
+    """Stop a run, discarding whatever was still waiting.
+
+    Needed because a run no longer dies with the tab that started it: without
+    this, a large run begun by mistake could only be waited out.
+
+    Args:
+        job_id: The run to stop.
+
+    Returns:
+        The run's record after stopping.
+
+    Raises:
+        HTTPException: 404 when no such run is still in memory.
+    """
+    await index_queue.cancel(job_id)
+
+    run = index_queue.get(job_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No such run: {job_id}")
+
+    return run
 
 
 @router.post(

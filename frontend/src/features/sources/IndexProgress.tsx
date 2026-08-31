@@ -1,9 +1,17 @@
 /**
  * Live progress for an indexing run.
  *
- * The run streams because it is slow, so this shows which file is being worked
- * on and which stage it has reached. Per-file failures are listed without
- * ending the run — that is the endpoint's contract, and the panel reflects it.
+ * The run belongs to the server, not to this page, so three things have to be
+ * visible that a page-owned run never needed to show:
+ *
+ *   * that progress was *resumed* — the run was already going when the page
+ *     loaded, rather than started by this click;
+ *   * that the total can grow, because a later click joins the run in flight;
+ *   * that Stop is now the only way to end a run, since closing the tab no
+ *     longer does it.
+ *
+ * Per-file failures are listed without ending the run — that is the pipeline's
+ * contract, and the panel reflects it.
  */
 
 import type { IndexStage, IndexSummaryEventData } from '../../api/types'
@@ -14,12 +22,19 @@ interface IndexProgressProps {
   running: boolean
   progress: RunProgress | null
   queued: string[]
-  /** Keys another run was already embedding, so this one left them alone. */
-  busy: string[]
+  /** Keys still waiting their turn behind the file being embedded. */
+  pending: string[]
   failures: RunFailure[]
   summary: IndexSummaryEventData | null
+  /** Chunks the run did not have to embed, because the index already held them. */
+  reused: number
+  /** Keys refused because the queue is full, and the limit that refused them. */
+  rejected: string[]
+  limit: number
   error: string | null
-  onCancel: () => void
+  /** True when this page attached to a run that was already in flight. */
+  resumed: boolean
+  onStop: () => void
   onDismiss: () => void
 }
 
@@ -35,15 +50,19 @@ export function IndexProgress({
   running,
   progress,
   queued,
-  busy,
+  pending,
   failures,
   summary,
+  reused,
+  rejected,
+  limit,
   error,
-  onCancel,
+  resumed,
+  onStop,
   onDismiss,
 }: IndexProgressProps) {
   // Nothing has happened yet and nothing is left over — render nothing.
-  if (!running && !summary && !error && failures.length === 0 && busy.length === 0) {
+  if (!running && !summary && !error && failures.length === 0 && rejected.length === 0) {
     return null
   }
 
@@ -57,16 +76,23 @@ export function IndexProgress({
       <header className="flex items-center justify-between gap-4">
         <h2 className="flex items-center gap-2 text-sm font-medium text-slate-700">
           {running ? <Spinner /> : null}
-          {running ? 'Indexing' : error ? 'Indexing failed' : 'Indexing finished'}
+          {running
+            ? resumed && !summary
+              ? 'Indexing — rejoined a run already in progress'
+              : 'Indexing'
+            : error
+              ? 'Indexing failed'
+              : 'Indexing finished'}
         </h2>
 
         {running ? (
           <button
             type="button"
-            onClick={onCancel}
+            onClick={onStop}
+            title="The run continues on the server until stopped, even if you close this tab."
             className="rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
           >
-            Cancel
+            Stop
           </button>
         ) : (
           <button
@@ -101,23 +127,37 @@ export function IndexProgress({
           ) : (
             <p className="mt-2 text-xs text-slate-400">Preparing {total} file(s)…</p>
           )}
+          {pending.length > 0 ? (
+            <p className="mt-1 text-xs text-slate-400">
+              Waiting: <span className="font-mono">{pending.join(', ')}</span>
+            </p>
+          ) : null}
         </div>
       ) : null}
 
       {summary ? (
         <p className="tabular mt-3 text-xs text-slate-500">
           {summary.indexed} indexed · {summary.skipped} skipped · {summary.failed} failed ·{' '}
-          {summary.total_chunks} chunks written
+          {summary.total_chunks} chunks
+          {summary.total_reused > 0
+            ? ` · ${summary.total_reused} reused without re-embedding`
+            : ''}
           {summary.total_pruned > 0 ? ` · ${summary.total_pruned} stale chunks removed` : ''}
+        </p>
+      ) : null}
+
+      {running && reused > 0 ? (
+        <p className="tabular mt-3 text-xs text-slate-500">
+          {reused} chunk(s) already in the index and reused, so not embedded again.
         </p>
       ) : null}
 
       {error ? <p className="mt-3 text-xs text-state-orphaned">{error}</p> : null}
 
-      {busy.length > 0 ? (
-        <p className="mt-3 text-xs text-slate-500">
-          Already being indexed by another run, so left alone:{' '}
-          <span className="font-mono">{busy.join(', ')}</span>
+      {rejected.length > 0 ? (
+        <p className="mt-3 text-xs text-state-stale">
+          Not queued — the limit of {limit} waiting file(s) is reached:{' '}
+          <span className="font-mono">{rejected.join(', ')}</span>
         </p>
       ) : null}
 

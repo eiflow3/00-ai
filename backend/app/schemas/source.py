@@ -52,6 +52,12 @@ class IndexState(str, Enum):
     # The file changed in storage after it was embedded — re-index needed.
     STALE_CONTENT = "stale_content"
 
+    # A previous run stopped partway, so the index holds some but not all of
+    # this file's chunks. Reported separately from stale content because the
+    # index is not merely out of date, it is internally inconsistent: chunks
+    # from two different versions of the file can be retrieved side by side.
+    INTERRUPTED = "interrupted"
+
     # Embedded with a different model than the one now configured. Scores
     # across two embedding spaces are meaningless, so this needs re-indexing
     # just as urgently as changed content.
@@ -82,6 +88,13 @@ class IndexedDocument(BaseModel):
 
     # How many vectors this file currently occupies in the index.
     chunk_count: int = Field(default=0, ge=0, description="Number of chunks indexed")
+
+    # How many chunks the last run said the file should have. Compared against
+    # `chunk_count` to detect a run that stopped partway. Zero on vectors
+    # written before this was recorded, which reads as "cannot tell".
+    chunk_total: int = Field(
+        default=0, ge=0, description="Chunks the file should have, as last recorded"
+    )
 
     # When the embeddings were written.
     embedded_at: Optional[datetime] = Field(
@@ -140,6 +153,13 @@ class SourceStatus(BaseModel):
         default=False, description="True while a run is embedding this file"
     )
 
+    # Whether the file is waiting its turn. One worker drains the queue, so a
+    # file can be accepted long before anything starts happening to it, and a
+    # row that says "indexing" when nothing is happening to it yet is a lie.
+    queued: bool = Field(
+        default=False, description="True while the file waits its turn in the queue"
+    )
+
     @property
     def needs_reindex(self) -> bool:
         """Whether re-running the pipeline on this file would change anything."""
@@ -149,7 +169,12 @@ class SourceStatus(BaseModel):
 # States a re-index can actually fix. `orphaned` is excluded because there is
 # no longer a file to embed — that one is resolved by deleting its vectors.
 _REINDEXABLE_STATES = frozenset(
-    {IndexState.NOT_INDEXED, IndexState.STALE_CONTENT, IndexState.STALE_MODEL}
+    {
+        IndexState.NOT_INDEXED,
+        IndexState.STALE_CONTENT,
+        IndexState.STALE_MODEL,
+        IndexState.INTERRUPTED,
+    }
 )
 
 
