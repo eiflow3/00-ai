@@ -124,6 +124,19 @@ export interface DeindexResponse {
   deleted: number
 }
 
+/**
+ * Result of deleting a file and its embeddings.
+ *
+ * Both sides are reported because they can legitimately disagree: a file that
+ * was never indexed deletes with no vectors, an orphan deletes with no file,
+ * and a key already gone from both comes back all zeroes rather than failing.
+ */
+export interface DeleteResponse {
+  source_key: string
+  vectors_deleted: number
+  file_deleted: boolean
+}
+
 // --- Index runs: enqueue, attach, stop --------------------------------------
 
 /** Request body for queueing files for embedding. */

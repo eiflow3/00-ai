@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# Open a CLI session on one of the app's SQLite databases.
+#
+#   ./db-connect runs      indexing run history  (backend/data/runs.db)
+#   ./db-connect traces    chat traces + judgements (backend/data/traces.db)
+#
+# Paths are resolved from this script's own location, so it works from any
+# directory. litecli is used when installed; sqlite3 is the fallback, since the
+# point is to get a prompt open rather than to insist on one client.
+
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+data="$root/backend/data"
+
+case "${1:-}" in
+runs)
+  db="$data/runs.db"
+  ;;
+traces)
+  db="$data/traces.db"
+  ;;
+*)
+  echo "usage: ./db-connect <runs|traces>" >&2
+  echo >&2
+  echo "  runs     indexing run history — runs, run_files, run_events" >&2
+  echo "  traces   chat traces and judgements — traces, trace_chunks, evaluations" >&2
+  exit 64
+  ;;
+esac
+
+if [[ ! -f "$db" ]]; then
+  echo "No database at $db yet." >&2
+  echo "It is created on backend startup — run 'npm run app:api' once." >&2
+  exit 1
+fi
+
+if command -v litecli >/dev/null 2>&1; then
+  exec litecli "$db"
+fi
+
+echo "litecli not found (brew install litecli); falling back to sqlite3." >&2
+exec sqlite3 "$db"

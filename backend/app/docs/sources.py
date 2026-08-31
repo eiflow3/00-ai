@@ -138,8 +138,49 @@ object storage.
 
 This is the resolution for an `orphaned` file, and the way to withdraw a
 document from retrieval without deleting the original. Indexing the same key
-again restores it.
+again restores it. To remove the file as well, use
+`DELETE /sources/{source_key}`.
+
+Refused with `409` while an indexing run is embedding the file or has it
+queued — deleting the vectors a worker is halfway through writing would leave
+the index holding part of a document with nothing to say so.
 """
+
+DELETE_SOURCE_DESCRIPTION = """\
+Delete a file from object storage **and** every vector built from it.
+
+The hard delete. `DELETE /sources/{source_key}/index` is the softer one — it
+withdraws a document from retrieval while leaving the file, so indexing the key
+again restores it. This leaves nothing behind on either side.
+
+The embeddings go first. If the storage delete then fails, what is left is a
+file with no vectors: it reads as `not_indexed` and a re-index repairs it. The
+other order can leave vectors describing a file that no longer exists, and a
+model cites those with full confidence.
+
+Deleting a key that is already gone from both sides is **not** an error. It
+comes back with `vectors_deleted: 0` and `file_deleted: false`, because the end
+state the caller asked for is the state the store is in.
+
+Refused with `409` while an indexing run is embedding the file or has it
+queued: a worker mid-write would otherwise finish writing vectors for a
+document that has just been deleted. Stop the run first.
+"""
+
+DELETE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    409: {
+        "description": "An indexing run is holding this file. Stop the run, then "
+        "delete it.",
+        "content": {
+            "application/json": {
+                "example": {
+                    "detail": "'policy.md' is being embedded right now. "
+                    "Stop the run first, then delete it."
+                }
+            }
+        },
+    },
+}
 
 UPLOAD_DESCRIPTION = """\
 Upload a new file into object storage.

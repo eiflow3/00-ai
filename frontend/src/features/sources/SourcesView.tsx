@@ -13,8 +13,9 @@ import { SourceRow } from './SourceRow'
 import { UploadPanel } from './UploadPanel'
 import { needsReindex } from './state'
 import { basename } from './uploadRules'
-import { deindexSource, replaceSource } from '../../api/client'
-import type { IndexState } from '../../api/types'
+import { deindexSource, deleteSource, replaceSource } from '../../api/client'
+import type { IndexState, SourceStatus } from '../../api/types'
+import { ChoiceDialog } from '../../components/ChoiceDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { EmptyState } from '../../components/EmptyState'
 import { Spinner } from '../../components/Spinner'
@@ -48,7 +49,10 @@ export function SourcesView() {
   const [filter, setFilter] = useState<IndexState | 'all'>('all')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingReplace | null>(null)
-  const [replaceError, setReplaceError] = useState<string | null>(null)
+  // The row whose delete dialog is open. Held whole rather than by key, because
+  // which deletions are on offer depends on what each side of the row holds.
+  const [deleting, setDeleting] = useState<SourceStatus | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const { sources, loading, error, refresh, merge } = useSources(
     filter === 'all' ? undefined : filter,
@@ -87,11 +91,25 @@ export function SourcesView() {
     setExpanded((current) => (current === sourceKey ? null : sourceKey))
   }, [])
 
-  const handleDeindex = useCallback(
-    async (sourceKey: string) => {
-      await deindexSource(sourceKey)
-      // Deletion changes which side knows about the file, so re-read the join.
-      refresh()
+  /**
+   * Run one of the two deletions and show what the table looks like after.
+   *
+   * Both re-read the list rather than merging a row: one of them removes the
+   * row entirely, and the other changes which side of the join knows the key.
+   */
+  const performDelete = useCallback(
+    async (sourceKey: string, vectorsOnly: boolean) => {
+      setActionError(null)
+      try {
+        if (vectorsOnly) {
+          await deindexSource(sourceKey)
+        } else {
+          await deleteSource(sourceKey)
+        }
+        refresh()
+      } catch (cause: unknown) {
+        setActionError(cause instanceof Error ? cause.message : String(cause))
+      }
     },
     [refresh],
   )
@@ -99,14 +117,14 @@ export function SourcesView() {
   /** Send the replacement, then show the file's new state. */
   const performReplace = useCallback(
     async (sourceKey: string, file: File) => {
-      setReplaceError(null)
+      setActionError(null)
       try {
         const response = await replaceSource(sourceKey, file)
         // Replacing discards the old vectors, so the row's state changes on
         // both sides — take it from the response rather than re-listing.
         merge([response.status])
       } catch (cause: unknown) {
-        setReplaceError(cause instanceof Error ? cause.message : String(cause))
+        setActionError(cause instanceof Error ? cause.message : String(cause))
       }
     },
     [merge],
@@ -197,9 +215,9 @@ export function SourcesView() {
         onDismiss={run.reset}
       />
 
-      {replaceError ? (
+      {actionError ? (
         <p className="mb-4 rounded-lg border border-state-orphaned-soft bg-state-orphaned-soft px-4 py-3 text-sm text-state-orphaned">
-          {replaceError}
+          {actionError}
         </p>
       ) : null}
 
@@ -249,7 +267,7 @@ export function SourcesView() {
                   actionsDisabled={false}
                   onToggle={() => toggle(status.source_key)}
                   onReindex={() => void run.enqueue({ keys: [status.source_key] })}
-                  onDeindex={() => void handleDeindex(status.source_key)}
+                  onDelete={() => setDeleting(status)}
                   onReplace={(file) => handleReplace(status.source_key, file)}
                 />
               ))}
@@ -257,6 +275,46 @@ export function SourcesView() {
           </table>
         </div>
       )}
+
+      <ChoiceDialog
+        open={deleting !== null}
+        title="Delete this source?"
+        onCancel={() => setDeleting(null)}
+        choices={[
+          {
+            label: 'Delete the file and its embeddings',
+            description:
+              deleting?.source === null
+                ? 'No file left in storage — only its vectors remain.'
+                : 'Removes the file from object storage as well. Nothing is left to re-index.',
+            danger: true,
+            disabled: deleting?.source === null,
+            onSelect: () => {
+              if (deleting) void performDelete(deleting.source_key, false)
+              setDeleting(null)
+            },
+          },
+          {
+            label: 'Delete the embeddings only',
+            description: deleting?.indexed
+              ? `Removes ${deleting.indexed.chunk_count} chunk(s) from the index. The file stays, and indexing it again restores them.`
+              : 'Nothing is indexed under this key.',
+            disabled: !deleting?.indexed,
+            onSelect: () => {
+              if (deleting) void performDelete(deleting.source_key, true)
+              setDeleting(null)
+            },
+          },
+        ]}
+      >
+        <p>
+          <span className="font-mono">{deleting?.source_key}</span>
+        </p>
+        <p className="mt-2">
+          Deleting the file cannot be undone — the bytes are gone from object
+          storage, not moved aside.
+        </p>
+      </ChoiceDialog>
 
       <ConfirmDialog
         open={pending !== null}

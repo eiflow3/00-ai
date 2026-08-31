@@ -32,7 +32,8 @@ interface SourceRowProps {
   actionsDisabled: boolean
   onToggle: () => void
   onReindex: () => void
-  onDeindex: () => void
+  /** Open the delete dialog; the view asks which side to remove. */
+  onDelete: () => void
   /** Hand the chosen file up; the view decides whether to confirm first. */
   onReplace: (file: File) => void
 }
@@ -54,7 +55,7 @@ export function SourceRow({
   actionsDisabled,
   onToggle,
   onReindex,
-  onDeindex,
+  onDelete,
   onReplace,
 }: SourceRowProps) {
   const fileInput = useRef<HTMLInputElement>(null)
@@ -66,7 +67,9 @@ export function SourceRow({
   // A run already embedding this file makes a second request pointless: the
   // server would refuse it anyway rather than let two runs interleave.
   const canReindex = source !== null && needsReindex(state) && !busy
-  const canDeindex = indexed !== null && !busy
+  // Every row has something to delete — a file, vectors, or both — so the
+  // choice of which belongs in the dialog rather than in whether it opens.
+  const canDelete = !busy
   // An orphan has no file left to replace — only vectors to remove.
   const canReplace = source !== null && !busy
 
@@ -157,14 +160,14 @@ export function SourceRow({
               Index
             </button>
           ) : null}
-          {canDeindex ? (
+          {canDelete ? (
             <button
               type="button"
-              onClick={onDeindex}
+              onClick={onDelete}
               disabled={actionsDisabled}
               className="ml-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-state-orphaned-soft hover:text-state-orphaned disabled:opacity-40"
             >
-              Remove vectors
+              Delete
             </button>
           ) : null}
         </td>

@@ -172,3 +172,35 @@ async def head_object(key: str) -> SourceObject:
         return _to_source_object({**response, "Key": key, "Size": response.get("ContentLength", 0)})
 
     return await asyncio.to_thread(_head)
+
+
+async def delete_object(key: str) -> bool:
+    """Delete one object, reporting whether it was there to delete.
+
+    S3-compatible deletes are idempotent and succeed on a key that never
+    existed, which is the right transport behaviour but tells the caller
+    nothing.  A head first turns that silence into an answer, so a delete of a
+    file another client already removed reads as "nothing to do" rather than
+    as a success that invented a file.
+
+    Args:
+        key: The object key within the bucket.
+
+    Returns:
+        True when an object was found and removed, False when the key was
+        already empty.
+    """
+
+    def _delete() -> bool:
+        client = ObjectStoreManager.get_client()
+        try:
+            client.head_object(Bucket=settings.r2_bucket, Key=key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+                return False
+            raise
+
+        client.delete_object(Bucket=settings.r2_bucket, Key=key)
+        return True
+
+    return await asyncio.to_thread(_delete)

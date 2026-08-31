@@ -11,6 +11,7 @@ import type {
   ChatEvent,
   ChatRequest,
   DeindexResponse,
+  DeleteResponse,
   EnqueueResponse,
   Evaluation,
   EvaluationOptions,
@@ -115,6 +116,21 @@ export function getSource(sourceKey: string, signal?: AbortSignal): Promise<Sour
 /** Delete a file's vectors, leaving the file itself in object storage. */
 export function deindexSource(sourceKey: string): Promise<DeindexResponse> {
   return request<DeindexResponse>(url(`/sources/${encodeKey(sourceKey)}/index`), {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * Delete a file from object storage along with every vector built from it.
+ *
+ * The hard counterpart to `deindexSource`, which keeps the file. Deleting a key
+ * that is already gone from both sides is not an error — it comes back as
+ * zeroes, because the caller asked for a state the store is already in.
+ *
+ * @throws ApiError - 409 while an indexing run is holding the file.
+ */
+export function deleteSource(sourceKey: string): Promise<DeleteResponse> {
+  return request<DeleteResponse>(url(`/sources/${encodeKey(sourceKey)}`), {
     method: 'DELETE',
   })
 }

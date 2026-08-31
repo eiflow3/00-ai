@@ -209,9 +209,10 @@ and a single verdict.
   than none: they get cited with full confidence. A differently-named file
   prompts for confirmation rather than being refused.
 - **Index / Index stale** — per row, or everything that needs it.
-- **Remove vectors** — withdraws a file from retrieval without deleting the
-  file. There is deliberately no delete-the-file action; that is the storage
-  console's job.
+- **Delete** — asks which side to remove rather than assuming: the file *and* its
+  embeddings, or the embeddings only. Removing only the embeddings withdraws a
+  file from retrieval and leaves it re-indexable; removing both is final. Either
+  is refused while an indexing run is holding that file.
 - Expanding a row lists every stored chunk with its vector id and length.
 
 ### Chat
@@ -366,7 +367,7 @@ can be range-filtered later.
 | `stale_content` | the file changed after it was embedded | Re-index |
 | `stale_model` | embedded by a different model than is configured now | Re-index |
 | `interrupted` | a run stopped partway; only some chunks are indexed | Re-index — only the missing chunks are embedded |
-| `orphaned` | vectors exist for a file that is gone | Remove vectors |
+| `orphaned` | vectors exist for a file that is gone | Delete its embeddings |
 | `unsupported` | no extractor for this file type | convert or remove |
 
 Rules are evaluated in precedence order, first match winning, so a file that is
@@ -442,6 +443,7 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 | `POST` | `/sources/upload` | store a new file (multipart); `201` new, `200` identical retry, `409` name taken by different content |
 | `PUT` | `/sources/{key}` | replace contents and discard the old vectors |
 | `DELETE` | `/sources/{key}/index` | remove a file's vectors, keep the file |
+| `DELETE` | `/sources/{key}` | remove the file *and* its vectors; `409` while a run holds it |
 
 ### Indexing
 

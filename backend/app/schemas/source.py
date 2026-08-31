@@ -216,6 +216,30 @@ class DeindexResponse(BaseModel):
     deleted: int = Field(default=0, ge=0, description="Number of vectors deleted")
 
 
+class DeleteResponse(BaseModel):
+    """Result of deleting a source file and its embeddings.
+
+    Both counts are reported rather than assumed, because the two sides can
+    legitimately disagree: a file that was never indexed deletes with zero
+    vectors, and an orphan deletes with no file.  Deleting a key that is
+    already gone from both sides reaches the same end state, so it comes back
+    as zeroes rather than an error.
+    """
+
+    # The file that was deleted.
+    source_key: str = Field(..., description="Object key that was deleted")
+
+    # How many vectors went with it.
+    vectors_deleted: int = Field(
+        default=0, ge=0, description="Number of vectors deleted from the index"
+    )
+
+    # Whether an object was actually removed from storage.
+    file_deleted: bool = Field(
+        default=False, description="True when an object was removed from storage"
+    )
+
+
 class UploadResponse(BaseModel):
     """Result of writing a file into object storage.
 

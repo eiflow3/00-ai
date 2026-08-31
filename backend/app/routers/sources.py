@@ -18,6 +18,8 @@ from app.docs.sources import (
     ATTACH_RUN_DESCRIPTION,
     ATTACH_RUN_RESPONSES,
     DEINDEX_DESCRIPTION,
+    DELETE_RESPONSES,
+    DELETE_SOURCE_DESCRIPTION,
     GET_SOURCE_DESCRIPTION,
     GET_SOURCE_RESPONSES,
     INDEX_SOURCES_DESCRIPTION,
@@ -35,12 +37,14 @@ from app.docs.sources import (
 from app.schemas.ingestion import EnqueueResponse, IndexRequest, IndexRun
 from app.schemas.source import (
     DeindexResponse,
+    DeleteResponse,
     IndexState,
     SourceDetail,
     SourceStatus,
     UploadResponse,
 )
-from app.services import index_catalog, index_queue, sync_status, uploads
+from app.services import deletion, index_queue, sync_status, uploads
+from app.services.deletion import DeletionBlocked
 from app.services.uploads import UploadRejected
 
 logger = logging.getLogger(__name__)
@@ -359,6 +363,50 @@ async def deindex_source(source_key: str) -> DeindexResponse:
         The key, and how many vectors were deleted. Zero means nothing was
         indexed under that key — which is not an error, it is the end state
         the caller asked for.
+
+    Raises:
+        HTTPException: 409 while an indexing run is holding the file.
     """
-    deleted = await index_catalog.delete_document(source_key)
+    try:
+        deleted = await deletion.delete_vectors(source_key)
+    except DeletionBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
     return DeindexResponse(source_key=source_key, deleted=deleted)
+
+
+# Declared last on purpose. `{source_key:path}` swallows anything, so every
+# more specific route above — the run endpoints included — has to be matched
+# first, and Starlette matches in declaration order.
+@router.delete(
+    "/{source_key:path}",
+    response_model=DeleteResponse,
+    summary="Delete a file and every vector built from it",
+    response_description="What was removed from each side.",
+    description=DELETE_SOURCE_DESCRIPTION,
+    responses=DELETE_RESPONSES,
+)
+async def delete_source(source_key: str) -> DeleteResponse:
+    """Remove a file from storage along with its embeddings.
+
+    The hard counterpart to deindexing, which keeps the file. Deleting a key
+    that is already gone from both sides is reported rather than raised — the
+    caller asked for a state the store is already in.
+
+    Args:
+        source_key: The object key to delete.
+
+    Returns:
+        How many vectors were removed, and whether a file was there to remove.
+
+    Raises:
+        HTTPException: 409 while an indexing run is holding the file.
+    """
+    try:
+        deleted, removed = await deletion.delete_source(source_key)
+    except DeletionBlocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    return DeleteResponse(
+        source_key=source_key, vectors_deleted=deleted, file_deleted=removed
+    )
