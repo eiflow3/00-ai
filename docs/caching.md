@@ -61,13 +61,19 @@ rather than estimated. For a corpus of *N* indexed files:
 | `GET /sources` | R2 calls | Pinecone calls |
 |---|---|---|
 | Before this work | 1 | **2N + 2** |
-| Cold miss (rebuild) | 1 | 4 |
-| **Warm hit** | 1 | **2** |
+| Cold miss (rebuild) | 1 | 3 |
+| **Warm hit** | 1 | **1** |
 
 **A warm hit is not zero Pinecone calls.** The freshness probe runs on *every*
-request, cached or not, and `index_stats()` is two HTTP calls — `has_index()`
-against the control plane plus `describe_index_stats()` against the data plane.
-The cache removes the walk, not the probe.
+request, cached or not — the cache removes the walk, not the probe.
+
+That probe used to be two calls: `has_index()` against the control plane, then
+`describe_index_stats()` against the data plane. The guard was redundant —
+`describe_index_stats()` raises `NotFoundException` for a missing index, which
+is exactly what `has_index()` was being asked, from a call that had to happen
+anyway. Removing it, and caching the index handle rather than rebuilding it per
+call, took the probe from **1204ms to 274ms** and a warm request from 1.18s to
+0.25s.
 
 The `2N` was the killer: the old listing asked the index about every file
 individually — one prefix listing and one metadata fetch each. At 50 indexed
@@ -98,8 +104,8 @@ many clients are watching, because they all collapse onto the same entry.
 
 Three honest deductions from that:
 
-- **The probe is not free.** A warm `GET /sources` still spends two Pinecone
-  calls and one R2 listing. The trade is `2N + 2` calls for `2`, not for zero.
+- **The probe is not free.** A warm `GET /sources` still spends one Pinecone
+  call and one R2 listing. The trade is `2N + 2` calls for `2`, not for zero.
 - **Not every call bills the same way.** The operations the cache actually
   eliminates — `list` and `fetch` — are data-plane reads that consume read
   units. The surviving probe is a metadata/control-plane call, which is priced
@@ -450,9 +456,11 @@ Work through this in order. Most endpoints stop at the first question.
 ## 12. Limits
 
 - **The freshness probe costs a round trip, and an operation.** A warm
-  `GET /sources` still spends ~1s and two billed calls — the R2 listing plus
-  Pinecone's stats call. The cache removes the index walk, not the live half;
-  that is the deliberate trade for R2 changes being visible immediately.
+  `GET /sources` spends ~250ms across two calls — Pinecone's stats probe at
+  ~274ms dominates it, and R2's listing is ~60ms of it. The cache removes the
+  index walk, not the live half; that is the deliberate trade for R2 changes
+  being visible immediately. Removing the probe entirely is what the
+  `indexed_document` projection would buy.
 - **A short TTL trades money for freshness.** Sixty seconds bounds how long an
   in-place console edit stays invisible, and also how often the index is walked
   under sustained traffic. Raising it saves operations and widens that window;
@@ -500,7 +508,8 @@ Work through this in order. Most endpoints stop at the first question.
 
 Against the live R2 bucket, Pinecone index and Redis:
 
-- `GET /sources` — **4.81s cold → 1.18s warm**, byte-identical payloads.
+- `GET /sources` — **4.07s cold → 0.245s warm**, byte-identical payloads.
+  (Before the probe was trimmed: 4.81s cold, 1.18s warm.)
 - `GET /sources/{key}` — **0.96s cold → 0.29s warm**.
 - The log showed the full cycle: `nothing cached` → `hit` → `refresh requested`
   → `hit` → `invalidated by a write`.

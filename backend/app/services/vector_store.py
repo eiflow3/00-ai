@@ -46,6 +46,8 @@ class PineconeManager:
             # requires the index to exist, and on a fresh account it does not
             # until ensure_index() has run.
             cls._instance.index = None
+            # A second handle for read-only probes, which must never provision.
+            cls._instance.probe_index = None
         return cls._instance
 
     @classmethod
@@ -56,6 +58,28 @@ class PineconeManager:
             ensure_index()
             instance.index = instance.pc.Index(settings.pinecone_index_name)
         return instance.index
+
+    @classmethod
+    def get_probe_index(cls):
+        """Return an index handle that never provisions a missing index.
+
+        `get_index` creates the index when it is absent, which is correct
+        before a write and wrong for a read: a status check has to be able to
+        report "nothing indexed yet" without bringing an index into existence
+        as a side effect of being asked.
+
+        Cached like the other handle. Rebuilding it per call cost a round trip
+        to resolve the index host, for an answer that cannot change while the
+        process lives.
+
+        Raises:
+            Whatever the SDK raises when the index does not exist. The caller
+            decides whether that is an error or simply "no index yet".
+        """
+        instance = cls()
+        if instance.probe_index is None:
+            instance.probe_index = instance.pc.Index(settings.pinecone_index_name)
+        return instance.probe_index
 
     @classmethod
     def get_client(cls):
@@ -249,12 +273,17 @@ def index_stats() -> dict:
 
     Unlike the other helpers this does not provision a missing index — it is a
     read-only probe, and reporting "no index yet" is a valid answer.
-    """
-    client = PineconeManager.get_client()
-    if not client.has_index(settings.pinecone_index_name):
-        return {}
 
+    This sits on the read path of every `GET /sources`, which is why it is
+    written the way it is. It used to call `has_index()` first so a missing
+    index returned empty rather than raising — but `NotFoundException` below
+    already answers that question, from a call we have to make anyway. The
+    guard was a second round trip to learn what the first one reports for
+    free, and it cost more than the call it guarded.
+    """
     try:
-        return dict(client.Index(settings.pinecone_index_name).describe_index_stats())
+        return dict(PineconeManager.get_probe_index().describe_index_stats())
     except NotFoundException:
+        # No index yet, which is a valid state on a fresh account rather than a
+        # failure. The caller reads an empty result as "cannot tell".
         return {}
