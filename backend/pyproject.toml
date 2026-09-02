@@ -18,5 +18,23 @@ dependencies = [
     "redis>=5.0",
 ]
 
+# Test-only, so a deployment does not carry a test runner.
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+# Every test that touches the pipeline is async, so declaring the mode once
+# here beats decorating each one.
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Quiet by default: a smoke suite is read when it fails, not when it passes.
+addopts = "-q"
+markers = [
+    "live: hits the real Pinecone, OpenAI and R2. Skipped unless --live is passed.",
+]
