@@ -18,13 +18,24 @@ from pathlib import PurePosixPath
 
 from app.config import settings
 from app.schemas.source import SourceObject
-from app.services import index_catalog, source_cache
+from app.services import derived_artifacts, index_catalog, source_cache
 from app.services.object_store import head_object, put_object
+from app.services.provenance import DERIVED_PREFIX
 from app.services.text_extraction import SUPPORTED_EXTENSIONS, is_supported
 
-# MIME type recorded on stored objects. Everything we accept is text, and the
-# extension is what actually selects an extractor.
-DEFAULT_CONTENT_TYPE = "text/plain; charset=utf-8"
+# MIME type recorded per extension, so a stored PDF is a PDF to anything that
+# reads the bucket directly. The extension is what selects an extractor; the
+# content type only describes what was stored.
+_CONTENT_TYPES = {
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".markdown": "text/markdown; charset=utf-8",
+    ".pdf": "application/pdf",
+}
+
+# For a key whose extension has no entry — which validation should have
+# rejected, but a content type must never be the thing that fails a write.
+_FALLBACK_CONTENT_TYPE = "application/octet-stream"
 
 # Path segments that would let a key escape its prefix.
 _TRAVERSAL_SEGMENTS = {"..", "."}
@@ -63,7 +74,21 @@ def normalise_key(filename: str, prefix: str = "") -> str:
     if any(segment in _TRAVERSAL_SEGMENTS for segment in parts):
         raise UploadRejected("The file path may not contain '.' or '..' segments.")
 
-    return "/".join(parts)
+    key = "/".join(parts)
+
+    # The derived area holds extraction artifacts the pipeline writes for
+    # itself. An upload landing there would surface as a phantom source.
+    if key.startswith(DERIVED_PREFIX):
+        raise UploadRejected(
+            f"Keys under {DERIVED_PREFIX!r} are reserved for extracted artifacts."
+        )
+
+    return key
+
+
+def content_type_for(key: str) -> str:
+    """The MIME type to record for an object stored at this key."""
+    return _CONTENT_TYPES.get(PurePosixPath(key).suffix.lower(), _FALLBACK_CONTENT_TYPE)
 
 
 def validate(key: str, data: bytes) -> None:
@@ -160,7 +185,7 @@ async def upload_new(
             f"Replace it instead of uploading over it."
         )
 
-    stored = await put_object(key, data, DEFAULT_CONTENT_TYPE)
+    stored = await put_object(key, data, content_type_for(key))
 
     # The listing has a new row in it. Told rather than discovered: the index's
     # own statistics lag a write, so the cache's freshness check alone could
@@ -201,10 +226,15 @@ async def replace(
 
     # Write first, then prune. If the write fails the old file and its vectors
     # are both still intact, rather than the vectors being gone for nothing.
-    stored = await put_object(source_key, data, DEFAULT_CONTENT_TYPE)
+    stored = await put_object(source_key, data, content_type_for(source_key))
 
     # Every existing vector describes bytes that no longer exist.
     pruned = await index_catalog.delete_document(source_key)
+
+    # And so does everything extracted from them. The etag check would already
+    # refuse to serve these; deleting keeps the store from accumulating
+    # snapshots of versions nobody can ask about.
+    await derived_artifacts.delete_for(source_key)
 
     await source_cache.invalidate(source_key)
 

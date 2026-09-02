@@ -235,7 +235,7 @@ export function SourcesView() {
           title={filter === 'all' ? 'No files in object storage' : 'No files in this state'}
           hint={
             filter === 'all'
-              ? 'Upload a .txt or .md file to the bucket, then refresh.'
+              ? 'Upload a .txt, .md or .pdf file to the bucket, then refresh.'
               : 'Try a different filter.'
           }
         />

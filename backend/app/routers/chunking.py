@@ -42,6 +42,7 @@ from app.schemas.variant_score import (
 )
 from app.services import chunk_preview, chunk_variants, variant_score_queue
 from app.services.chunk_variants import UnknownVariant
+from app.services.derived_artifacts import DerivedTextMissing
 from app.services.chunking.base import UnknownStrategy
 from app.services.chunking.catalog import catalog
 from app.services.golden_store import UnknownGoldenSet
@@ -92,6 +93,7 @@ def list_strategies() -> list[ChunkStrategySpec]:
     responses={
         400: {"description": "The geometry or the strategy cannot be run."},
         404: {"description": "No file at that key."},
+        409: {"description": "The file's text is extracted at index time; index it first."},
         415: {"description": "No extractor handles this file type."},
     },
 )
@@ -106,7 +108,8 @@ async def preview_chunking(body: ChunkPreviewRequest) -> ChunkPreviewResponse:
 
     Raises:
         HTTPException: 404 when the file is gone, 415 when it cannot be read,
-            400 when the strategy or geometry cannot produce chunks.
+            409 when its text has not been extracted yet, 400 when the
+            strategy or geometry cannot produce chunks.
     """
     try:
         return await chunk_preview.preview(body.source_key, body.config)
@@ -114,6 +117,10 @@ async def preview_chunking(body: ChunkPreviewRequest) -> ChunkPreviewResponse:
         raise HTTPException(status_code=404, detail=f"No source at key: {body.source_key}")
     except UnsupportedSourceType as exc:
         raise HTTPException(status_code=415, detail=str(exc))
+    except DerivedTextMissing as exc:
+        # The file exists and is supported, but its text is produced during
+        # indexing — a preview cannot afford to run that extraction inline.
+        raise HTTPException(status_code=409, detail=str(exc))
     except (UnknownStrategy, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

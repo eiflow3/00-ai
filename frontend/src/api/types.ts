@@ -92,6 +92,9 @@ export interface SourceChunk {
   chunk_index: number
   content: string
   char_count: number
+  /** First and last source page the chunk touches. Absent for pageless formats. */
+  page_start?: number | null
+  page_end?: number | null
 }
 
 /** One file in full — its status plus every chunk indexed from it. */
@@ -212,7 +215,13 @@ export interface EnqueueResponse {
   pending: string[]
 }
 
-export type IndexStage = 'loading' | 'chunking' | 'embedding' | 'upserting'
+export type IndexStage =
+  | 'loading'
+  | 'extracting'
+  | 'describing_tables'
+  | 'chunking'
+  | 'embedding'
+  | 'upserting'
 
 export interface IndexStartedEventData {
   /** The run this stream reports on. Kept so a reload can ask for it again. */

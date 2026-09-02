@@ -20,6 +20,8 @@ from app.services.provenance import (
     METADATA_CHUNK_TOTAL,
     METADATA_CONTENT,
     METADATA_EMBEDDED_AT,
+    METADATA_PAGE_END,
+    METADATA_PAGE_START,
     METADATA_SOURCE_ETAG,
     METADATA_SOURCE_KEY,
     METADATA_SOURCE_LAST_MODIFIED,
@@ -53,6 +55,18 @@ def _as_int(value: Any) -> int:
         return int(float(value))
     except (TypeError, ValueError):
         return 0
+
+
+def _as_page(value: Any) -> Optional[int]:
+    """Read an optional page number, where absence genuinely means no pages.
+
+    Unlike `_as_int`, zero is not a usable stand-in here: pages are 1-based
+    and a missing value means the format has none, so None is the honest read.
+    """
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 async def list_vector_ids_for(
@@ -133,6 +147,8 @@ def _to_chunks(ids: list[str], records: dict[str, dict[str, Any]]) -> list[Sourc
                 chunk_index=chunk_index,
                 content=content,
                 char_count=len(content),
+                page_start=_as_page(metadata.get(METADATA_PAGE_START)),
+                page_end=_as_page(metadata.get(METADATA_PAGE_END)),
             )
         )
 

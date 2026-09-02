@@ -174,6 +174,31 @@ async def head_object(key: str) -> SourceObject:
     return await asyncio.to_thread(_head)
 
 
+async def delete_prefix(prefix: str) -> int:
+    """Delete every object whose key begins with `prefix`.
+
+    Built from the list and delete primitives rather than a bulk-delete call,
+    so it behaves identically against any S3-compatible store — and against
+    the in-memory fake the test suite substitutes for them.
+
+    Args:
+        prefix: The key prefix to clear. Must be non-empty: an empty prefix
+            names the whole bucket, and nothing should be able to ask for that
+            by accident.
+
+    Returns:
+        How many objects were deleted.
+    """
+    if not prefix:
+        raise ValueError("delete_prefix requires a non-empty prefix.")
+
+    deleted = 0
+    for stored in await list_objects(prefix):
+        if await delete_object(stored.key):
+            deleted += 1
+    return deleted
+
+
 async def delete_object(key: str) -> bool:
     """Delete one object, reporting whether it was there to delete.
 

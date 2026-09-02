@@ -66,8 +66,9 @@ export function UploadPanel({ items, uploading, onUpload, onDismiss }: UploadPan
         ) : (
           <>
             <p className="text-sm text-slate-600">
-              Drop <code className="font-mono text-xs">.txt</code> or{' '}
-              <code className="font-mono text-xs">.md</code> files here, or{' '}
+              Drop <code className="font-mono text-xs">.txt</code>,{' '}
+              <code className="font-mono text-xs">.md</code> or{' '}
+              <code className="font-mono text-xs">.pdf</code> files here, or{' '}
               <button
                 type="button"
                 onClick={() => input.current?.click()}

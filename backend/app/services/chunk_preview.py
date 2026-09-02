@@ -20,11 +20,9 @@ from app.schemas.chunking import (
     ChunkPreviewStats,
     PreviewChunk,
 )
-from app.services import chunk_variants
+from app.services import chunk_variants, derived_artifacts
 from app.services.chunker import cut_document
 from app.services.chunking.tokens import count_tokens
-from app.services.object_store import get_object
-from app.services.text_extraction import extract_text
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +72,12 @@ async def preview(source_key: str, config: ChunkingConfig) -> ChunkPreviewRespon
     Raises:
         FileNotFoundError: If no object exists at that key.
         UnsupportedSourceType: If no extractor handles this file type.
+        DerivedTextMissing: If the file's text is extracted at index time and
+            it has not been indexed yet.
         UnknownStrategy: If the config names a strategy with no implementation.
         ValueError: If the overlap is not smaller than the chunk size.
     """
-    data = await get_object(source_key)
-    text = extract_text(source_key, data)
+    text = await derived_artifacts.load_source_text(source_key)
 
     segments = await cut_document(text, config)
 

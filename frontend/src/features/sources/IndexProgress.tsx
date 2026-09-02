@@ -41,6 +41,8 @@ interface IndexProgressProps {
 /** Human wording for each pipeline stage. */
 const STAGE_LABEL: Record<IndexStage, string> = {
   loading: 'Reading from storage',
+  extracting: 'Extracting text',
+  describing_tables: 'Describing tables',
   chunking: 'Splitting into chunks',
   embedding: 'Embedding',
   upserting: 'Writing to the index',

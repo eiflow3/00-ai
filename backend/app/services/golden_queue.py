@@ -53,12 +53,12 @@ from app.schemas.golden import (
 )
 from app.schemas.prompt import PromptId
 from app.services import (
+    derived_artifacts,
     golden_catalog,
     golden_facts,
     golden_generator,
     golden_store,
     golden_validator,
-    object_store,
     prompt_store,
     text_extraction,
 )
@@ -415,8 +415,13 @@ async def _load(source_key: str) -> str:
     if not text_extraction.is_supported(source_key):
         raise ValueError(f"Cannot read {source_key!r}: unsupported file type.")
 
-    data = await object_store.get_object(source_key)
-    text = await asyncio.to_thread(text_extraction.extract_text, source_key, data)
+    try:
+        text = await derived_artifacts.load_source_text(source_key)
+    except derived_artifacts.DerivedTextMissing as exc:
+        # Same contract as an unreadable type: the file exists but is unusable
+        # as it stands, and the message says exactly what makes it usable.
+        raise ValueError(str(exc)) from exc
+
     if not text.strip():
         raise ValueError(f"{source_key!r} holds no text to draft questions from.")
     return text

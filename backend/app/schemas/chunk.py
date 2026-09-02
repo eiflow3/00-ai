@@ -55,3 +55,18 @@ class Chunk(BaseModel):
         default=None,
         description="Character count of the chunk content",
     )
+
+    # First source-document page this chunk's text touches. None for formats
+    # without pages — absence, not zero, so nothing invents a page number.
+    page_start: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="First source page this chunk touches, when pages exist",
+    )
+
+    # Last source-document page this chunk's text touches.
+    page_end: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Last source page this chunk touches, when pages exist",
+    )

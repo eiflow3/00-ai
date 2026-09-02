@@ -37,13 +37,14 @@ from typing import AsyncIterator, Optional
 
 from app.schemas.chunk import Chunk
 from app.schemas.chunking import ChunkingConfig
+from app.schemas.extraction import ExtractionResult
 from app.schemas.source import SourceObject
-from app.services import index_catalog, index_plan
+from app.services import derived_artifacts, index_catalog, index_plan
 from app.services.chunker import chunk_document
 from app.services.embeddings import embed_texts
 from app.services.object_store import get_object, head_object
 from app.services.provenance import build_metadata, vector_id_for
-from app.services.text_extraction import extract_text
+from app.services.text_extraction import extract_document, requires_derived_artifact
 from app.services.vector_store import VectorSpace, upsert_chunks
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,10 @@ class IngestionResult:
         self.pruned = 0
         self.skipped = False
         self.error: Optional[str] = None
+        # Non-fatal trouble along the way — a table whose description could
+        # not be drafted, for instance. Reported as error events, never as a
+        # failed run.
+        self.warnings: list[str] = []
 
 
 async def _embed_in_batches(texts: list[str], model: str) -> list[list[float]]:
@@ -128,6 +133,8 @@ def _records_for(
                 content=chunks[position].content,
                 chunk_total=chunk_total,
                 embedded_at=embedded_at,
+                page_start=chunks[position].page_start,
+                page_end=chunks[position].page_end,
             ),
         }
         for position, vector in zip(positions, vectors)
@@ -162,12 +169,38 @@ async def index_source(
 
     # --- Load -------------------------------------------------------------
     data = await get_object(source.key)
-    text = extract_text(source.key, data)
     yield "loading", result
+
+    # --- Extract ------------------------------------------------------------
+    # A stored extraction that still matches the file's etag is the record
+    # that this — the expensive step, minutes for a scanned PDF — already
+    # happened. Reused even on a forced run: force re-embeds vectors, it does
+    # not make unchanged bytes extract differently.
+    extraction: Optional[ExtractionResult] = None
+    persisted = requires_derived_artifact(source.key)
+    if persisted:
+        extraction = await derived_artifacts.load_extraction(source.key)
+
+    freshly_extracted = extraction is None
+    if extraction is None:
+        extraction = await asyncio.to_thread(extract_document, source.key, data)
+    yield "extracting", result
+
+    # --- Describe tables ----------------------------------------------------
+    # A no-op for formats without tables, but always yielded so every run
+    # reports the same stages. The stored artifact is written after this
+    # stage, so what is persisted is what was chunked and embedded.
+    if persisted and freshly_extracted:
+        await derived_artifacts.save(source, extraction)
+    yield "describing_tables", result
 
     # --- Chunk ------------------------------------------------------------
     chunks = await chunk_document(
-        source.key, text, config, embedding_model=embedding_model
+        source.key,
+        extraction.text,
+        config,
+        embedding_model=embedding_model,
+        pages=extraction.pages or None,
     )
     result.chunk_count = len(chunks)
     yield "chunking", result

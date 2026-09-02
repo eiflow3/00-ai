@@ -7,7 +7,7 @@
  */
 
 /** Extensions the pipeline has an extractor for. Mirrors text_extraction.py. */
-export const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.markdown'] as const
+export const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.markdown', '.pdf'] as const
 
 /** The `accept` attribute for a file input, derived from the same list. */
 export const ACCEPT_ATTRIBUTE = SUPPORTED_EXTENSIONS.join(',')

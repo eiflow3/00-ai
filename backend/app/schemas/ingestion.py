@@ -173,8 +173,16 @@ class IndexProgressEventData(BaseModel):
     # Which file this concerns.
     source_key: str = Field(..., description="Object key being processed")
 
-    # Which stage just finished: loading, chunking, embedding or upserting.
-    stage: Literal["loading", "chunking", "embedding", "upserting"] = Field(
+    # Which stage just finished: loading, extracting, describing_tables,
+    # chunking, embedding or upserting.
+    stage: Literal[
+        "loading",
+        "extracting",
+        "describing_tables",
+        "chunking",
+        "embedding",
+        "upserting",
+    ] = Field(
         ..., description="Pipeline stage that just completed for this file"
     )
 

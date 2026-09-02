@@ -345,7 +345,6 @@ def objects(monkeypatch, report_text, report_key) -> FakeObjects:
     # And every module that imported one of them by name.
     monkeypatch.setattr(ingestion, "get_object", store.get_object)
     monkeypatch.setattr(ingestion, "head_object", store.head_object)
-    monkeypatch.setattr(chunk_preview, "get_object", store.get_object)
     monkeypatch.setattr(sync_status, "head_object", store.head_object)
     monkeypatch.setattr(sync_status, "list_objects", store.list_objects)
     monkeypatch.setattr(deletion, "delete_object", store.delete_object)

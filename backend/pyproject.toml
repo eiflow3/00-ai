@@ -16,6 +16,7 @@ dependencies = [
     "tiktoken>=0.7",
     "python-multipart>=0.0.9",
     "redis>=5.0",
+    "docling>=2.60,<3",
 ]
 
 # Test-only, so a deployment does not carry a test runner.

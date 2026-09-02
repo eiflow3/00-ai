@@ -22,7 +22,13 @@ deleted, and nothing later would reveal where they came from.
 
 import logging
 
-from app.services import chunk_variants, index_catalog, index_registry, source_cache
+from app.services import (
+    chunk_variants,
+    derived_artifacts,
+    index_catalog,
+    index_registry,
+    source_cache,
+)
 from app.services.object_store import delete_object
 
 logger = logging.getLogger(__name__)
@@ -111,6 +117,12 @@ async def delete_source(source_key: str) -> tuple[int, bool]:
     deleted += await chunk_variants.forget_source(source_key)
 
     removed = await delete_object(source_key)
+
+    # A file that is gone leaves nothing extracted from it behind either.
+    # Deindexing deliberately keeps these — the file is still there and its
+    # extraction still describes it — but a deleted file's artifacts would
+    # never be read again, only found.
+    await derived_artifacts.delete_for(source_key)
 
     await source_cache.invalidate(source_key)
 

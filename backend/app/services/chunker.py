@@ -17,9 +17,11 @@ how a chunk is named would invalidate every vector already stored.
 """
 
 import logging
+from typing import Optional
 
 from app.schemas.chunk import Chunk
 from app.schemas.chunking import ChunkingConfig
+from app.schemas.extraction import PageSpan
 from app.services.chunking import boundary, registry
 from app.services.chunking.base import Segment, StrategyContext
 from app.services.chunking.tokens import (
@@ -110,12 +112,33 @@ async def cut_document(
     return await split(text, config, context)
 
 
+def _pages_touched(
+    segment: Segment, pages: list[PageSpan]
+) -> tuple[Optional[int], Optional[int]]:
+    """The first and last source page a segment's offsets overlap.
+
+    Strategies stay page-blind — they cut text — so pages are assigned here,
+    after the cut, by intersecting each segment's character span with the page
+    spans the extractor measured over the same text.
+    """
+    touched = [
+        span.page
+        for span in pages
+        if span.start_offset < (segment.end_offset or 0)
+        and span.end_offset > (segment.start_offset or 0)
+    ]
+    if not touched:
+        return None, None
+    return min(touched), max(touched)
+
+
 async def chunk_document(
     source_key: str,
     text: str,
     config: ChunkingConfig,
     encoding_name: str = DEFAULT_ENCODING,
     embedding_model: str = "",
+    pages: Optional[list[PageSpan]] = None,
 ) -> list[Chunk]:
     """Split a source file's text into Chunk records ready for embedding.
 
@@ -127,6 +150,9 @@ async def chunk_document(
         embedding_model: The model these chunks will be embedded with. Passed
             to the strategy because one that cuts by meaning has to measure in
             the same embedding space the chunks will later be searched in.
+        pages: Page spans over `text`, for formats that have pages. Each chunk
+            is stamped with the first and last page its offsets touch; None
+            leaves every chunk pageless.
 
     Returns:
         Chunks in document order, each carrying its position and offsets.
@@ -150,18 +176,23 @@ async def chunk_document(
         config.chunk_overlap,
     )
 
-    return [
-        Chunk(
-            # The chunk id *is* the vector id — one identity across both, so a
-            # retrieved chunk can be traced straight back to its source file.
-            id=vector_id_for(document_id, index),
-            document_id=document_id,
-            content=segment.content,
-            chunk_index=index,
-            overlap=config.chunk_overlap if index else 0,
-            start_offset=segment.start_offset,
-            end_offset=segment.end_offset,
-            char_count=len(segment.content),
+    chunks: list[Chunk] = []
+    for index, segment in enumerate(segments):
+        page_start, page_end = _pages_touched(segment, pages) if pages else (None, None)
+        chunks.append(
+            Chunk(
+                # The chunk id *is* the vector id — one identity across both, so a
+                # retrieved chunk can be traced straight back to its source file.
+                id=vector_id_for(document_id, index),
+                document_id=document_id,
+                content=segment.content,
+                chunk_index=index,
+                overlap=config.chunk_overlap if index else 0,
+                start_offset=segment.start_offset,
+                end_offset=segment.end_offset,
+                char_count=len(segment.content),
+                page_start=page_start,
+                page_end=page_end,
+            )
         )
-        for index, segment in enumerate(segments)
-    ]
+    return chunks

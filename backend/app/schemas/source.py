@@ -193,6 +193,15 @@ class SourceChunk(BaseModel):
     # Length of the chunk's text.
     char_count: int = Field(default=0, ge=0, description="Character count of the chunk")
 
+    # First and last source-document page the chunk touches. None for formats
+    # without pages, so a .txt chunk never invents a page number.
+    page_start: Optional[int] = Field(
+        default=None, ge=1, description="First source page the chunk touches"
+    )
+    page_end: Optional[int] = Field(
+        default=None, ge=1, description="Last source page the chunk touches"
+    )
+
 
 class SourceDetail(BaseModel):
     """One source file in full — its status plus every chunk indexed from it."""

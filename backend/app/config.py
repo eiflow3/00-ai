@@ -68,7 +68,7 @@ class Settings(BaseSettings):
 
     # Largest file accepted through the upload endpoints.  Bounded because an
     # oversized document is an embedding bill, not just a large object.
-    max_upload_bytes: int = 10 * 1024 * 1024
+    max_upload_bytes: int = 50 * 1024 * 1024
 
     # How many files may be waiting to be embedded at once.  One worker drains
     # the queue, so this bounds the backlog a few impatient clicks can build —

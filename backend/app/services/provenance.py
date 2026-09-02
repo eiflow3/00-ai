@@ -51,6 +51,91 @@ METADATA_SOURCE_ETAG = "source_etag"
 METADATA_SOURCE_LAST_MODIFIED = "source_last_modified"
 METADATA_EMBEDDED_AT = "embedded_at"
 
+# First and last source-document page a chunk's text touches. Written only for
+# formats that have pages; absent — not zero — on everything else, because
+# Pinecone rejects nulls and a page number on a .txt would be an invention.
+METADATA_PAGE_START = "page_start"
+METADATA_PAGE_END = "page_end"
+
+# --- Derived artifacts --------------------------------------------------------
+# A structured source (a PDF) is normalised once into canonical markdown, and
+# that markdown — plus each extracted table — is stored *beside* the original,
+# under this prefix. The prefix is what keeps the two worlds apart: everything
+# under it is private plumbing, never listed as a source and never uploadable.
+
+DERIVED_PREFIX = "derived/"
+
+# The URI scheme table links use inside embedded text. The description that
+# stands in for a table ends with a link of this shape, and the frontend
+# resolves it back to the stored artifact.
+TABLE_LINK_SCHEME = "table"
+
+# Zero-padded so a listing of table artifacts sorts in document order.
+_TABLE_ID_FORMAT = "table-{index:03d}"
+
+
+def derived_markdown_key_for(source_key: str) -> str:
+    """The object key holding a source file's canonical extracted markdown."""
+    return f"{DERIVED_PREFIX}{document_id_for(source_key)}/document.md"
+
+
+def derived_extraction_key_for(source_key: str) -> str:
+    """The object key holding a source file's full extraction record."""
+    return extraction_key_for_document(document_id_for(source_key))
+
+
+def extraction_key_for_document(document_id: str) -> str:
+    """The extraction-record key, addressed by document id.
+
+    Table links carry only the document id, so their reads resolve keys this
+    way round.
+    """
+    return f"{DERIVED_PREFIX}{document_id}/extraction.json"
+
+
+def derived_prefix_for(source_key: str) -> str:
+    """The prefix under which every derived artifact of one source file lives."""
+    return f"{DERIVED_PREFIX}{document_id_for(source_key)}/"
+
+
+def table_prefix_for(document_id: str) -> str:
+    """The prefix under which one document's table artifacts live."""
+    return f"{DERIVED_PREFIX}{document_id}/tables/"
+
+
+def table_artifact_key_for(document_id: str, table_id: str) -> str:
+    """The object key holding one extracted table's markdown."""
+    return f"{DERIVED_PREFIX}{document_id}/tables/{table_id}.md"
+
+
+def table_id_for(index: int) -> str:
+    """The id of the nth table in a document, deterministic across re-runs.
+
+    Args:
+        index: Zero-based position of the table in document order.
+
+    Returns:
+        An id of the form "table-001".
+    """
+    return _TABLE_ID_FORMAT.format(index=index + 1)
+
+
+def table_link_for(document_id: str, table_id: str, label: str) -> str:
+    """Build the markdown link that stands in for a table in embedded text.
+
+    This exact shape is what the chat frontend recognises and turns into a
+    clickable view of the stored table — spelled here and nowhere else.
+
+    Args:
+        document_id: The document id from `document_id_for`.
+        table_id: The table's id from `table_id_for`.
+        label: The link text a reader sees.
+
+    Returns:
+        A markdown link of the form "[label](table://{document_id}/{table_id})".
+    """
+    return f"[{label}]({TABLE_LINK_SCHEME}://{document_id}/{table_id})"
+
 # How many chunks the whole file should have.  Stamped on every chunk so that
 # comparing it against the number of vectors actually present detects a run
 # that stopped partway — a write that never finished, or a prune that never
@@ -175,6 +260,8 @@ def build_metadata(
     content: str,
     chunk_total: int = 0,
     embedded_at: Optional[datetime] = None,
+    page_start: Optional[int] = None,
+    page_end: Optional[int] = None,
 ) -> dict[str, Any]:
     """Build the metadata stamped onto one chunk's vector.
 
@@ -194,13 +281,25 @@ def build_metadata(
         content: The chunk's text, stored so retrieval can return it directly.
         chunk_total: How many chunks the whole file produced.
         embedded_at: When the vector was produced; defaults to now.
+        page_start: First source-document page this chunk touches, if pages
+            exist for this format. Omitted from the metadata when None.
+        page_end: Last source-document page this chunk touches, likewise.
 
     Returns:
         A metadata dict using only types Pinecone accepts.
     """
     stamped_at = embedded_at or datetime.now(timezone.utc)
 
+    # Pages are written only when known: Pinecone rejects nulls, and absence is
+    # what marks a format that has no pages at all.
+    pages: dict[str, Any] = {}
+    if page_start is not None:
+        pages[METADATA_PAGE_START] = page_start
+    if page_end is not None:
+        pages[METADATA_PAGE_END] = page_end
+
     return {
+        **pages,
         # The join key — the one field that is authoritative on both sides.
         METADATA_SOURCE_KEY: source.key,
         METADATA_DOCUMENT_ID: document_id_for(source.key),

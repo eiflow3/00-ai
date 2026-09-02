@@ -86,7 +86,15 @@ export function ChunkList({ sourceKey }: ChunkListProps) {
           <div className="w-40 shrink-0">
             {/* The vector id is the link back to Pinecone — worth showing verbatim. */}
             <p className="tabular font-mono text-xs text-slate-400">{chunk.vector_id}</p>
-            <p className="mt-0.5 text-xs text-slate-400">{chunk.char_count} chars</p>
+            <p className="mt-0.5 text-xs text-slate-400">
+              {chunk.char_count} chars
+              {chunk.page_start != null &&
+                ` · p. ${chunk.page_start}${
+                  chunk.page_end != null && chunk.page_end !== chunk.page_start
+                    ? `–${chunk.page_end}`
+                    : ''
+                }`}
+            </p>
           </div>
           <p className="min-w-0 flex-1 text-sm whitespace-pre-wrap text-slate-600">
             {chunk.content}

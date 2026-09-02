@@ -22,6 +22,7 @@ from app.schemas.source import (
 )
 from app.services import index_catalog, index_registry, source_cache
 from app.services.object_store import head_object, list_objects
+from app.services.provenance import DERIVED_PREFIX
 from app.services.text_extraction import is_supported
 
 
@@ -210,6 +211,12 @@ async def list_statuses(prefix: str = "", refresh: bool = False) -> list[SourceS
         list_objects(prefix),
         source_cache.load_documents(refresh=refresh),
     )
+
+    # Derived artifacts share the bucket but are the pipeline's own plumbing —
+    # extraction results, not sources. Listing them would offer to index them.
+    objects = [
+        source for source in objects if not source.key.startswith(DERIVED_PREFIX)
+    ]
 
     stored_keys = {source.key for source in objects}
 

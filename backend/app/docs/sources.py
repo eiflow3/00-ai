@@ -258,7 +258,7 @@ UPLOAD_RESPONSES: dict[int | str, dict[str, Any]] = {
         "content": {
             "application/json": {
                 "example": {
-                    "detail": "Only .markdown, .md, .txt files can be indexed, so "
+                    "detail": "Only .markdown, .md, .pdf, .txt files can be indexed, so "
                     "other types are not accepted."
                 }
             }
@@ -296,7 +296,7 @@ A `text/event-stream` reporting one run's progress. Events arrive in this order:
 | --- | --- | --- |
 | `started` | exactly 1, always first | The run's id, the files it opened with, and the embedding model. |
 | `queued` | 0 or more | Files added to this run after it began, because a later request joined it. |
-| `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `chunking`, `embedding`, `upserting`. |
+| `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `extracting`, `describing_tables`, `chunking`, `embedding`, `upserting`. |
 | `completed` | 0 or 1 per file | That file's chunk count, how many chunks were reused without re-embedding, and how many were pruned. |
 | `error` | 0 or more | One file failing. The run continues. |
 | `summary` | exactly 1, always last | Totals, plus the final state of every processed file. |

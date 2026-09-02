@@ -49,11 +49,10 @@ from app.schemas.variant_score import (
 )
 from app.services import (
     chunk_variants,
+    derived_artifacts,
     golden_export,
     golden_store,
-    object_store,
     prompt_store,
-    text_extraction,
     variant_scorer,
 )
 from app.services.chunk_sections import section_spans
@@ -242,8 +241,7 @@ async def _worker(
     results: list[VariantScore] = []
 
     try:
-        data = await object_store.get_object(source_key)
-        text = text_extraction.extract_text(source_key, data)
+        text = await derived_artifacts.load_source_text(source_key)
 
         # Sections are located once and shared: the document is the same for
         # every variant, and it is the yardstick they are all measured by.
