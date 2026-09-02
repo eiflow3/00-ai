@@ -63,3 +63,9 @@ class ExtractionResult(BaseModel):
     source_etag: Optional[str] = Field(
         default=None, description="Etag of the source bytes this was extracted from"
     )
+
+    # Non-fatal trouble during extraction — a page that failed to parse, say.
+    # Degraded coverage the caller should surface, never a failed document.
+    warnings: list[str] = Field(
+        default_factory=list, description="Non-fatal extraction problems"
+    )

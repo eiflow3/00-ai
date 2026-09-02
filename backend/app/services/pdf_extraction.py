@@ -6,11 +6,25 @@ seconds to import and downloads model weights on first use, so a process that
 never meets a PDF never pays for it — and the offline test suite can fake
 `extract_pdf` without Docling being installed at all.
 
+Two choices in here were made by a failing test rather than taste:
+
+  * **The pdfium parsing backend.**  Docling's own parse backend failed
+    nondeterministically on multi-page files that every page-by-page probe
+    parsed fine — different pages "failed to parse" on different runs of the
+    same bytes.  pdfium (Chrome's PDF parser) read the same files without
+    complaint, and the layout model does the heavy lifting either way.
+  * **Pages are exported one at a time.**  A single whole-document export with
+    page-break placeholders silently collapses a page that produced nothing,
+    so everything after it would be attributed to the wrong page.  Exporting
+    per page number keeps the numbering true even when a page is empty or
+    failed to parse.
+
 The contract with the rest of the pipeline is the docstring of
 `ExtractionResult`: the returned `text` is the canonical string, its page
 spans describe that exact string, and each table also appears in `tables`
 verbatim.  OCR is always on, so a scanned page or a picture containing text
-comes back as text like any other page.
+comes back as text like any other page.  A page the parser could not read
+becomes a warning, never a failed document.
 """
 
 import io
@@ -28,11 +42,6 @@ logger = logging.getLogger(__name__)
 # re-parse of these.
 PAGE_MARKER_FORMAT = "<!-- page {page} -->"
 
-# Sentinel Docling is asked to place at page breaks, replaced (and measured)
-# before anything downstream sees the text. A form feed cannot appear in
-# markdown Docling emits, so splitting on it is exact.
-_PAGE_SENTINEL = "\f"
-
 # The converter loads model weights, so it is built once per process and only
 # when the first PDF actually arrives.
 _converter: Optional[Any] = None
@@ -44,6 +53,7 @@ def _get_converter() -> Any:
     global _converter
     with _converter_lock:
         if _converter is None:
+            from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
             from docling.datamodel.base_models import InputFormat
             from docling.datamodel.pipeline_options import (
                 PdfPipelineOptions,
@@ -56,30 +66,36 @@ def _get_converter() -> Any:
 
             logger.info("Loading Docling models (first PDF of this process)")
             _converter = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=options, backend=PyPdfiumDocumentBackend
+                    )
+                }
             )
         return _converter
 
 
-def _spans_from(marked: str) -> tuple[str, list[PageSpan]]:
-    """Replace page sentinels with visible markers, measuring spans as we go.
+def _assemble(document: Any) -> tuple[str, list[PageSpan]]:
+    """Join per-page markdown exports into one text, measuring spans as we go.
 
     Args:
-        marked: The markdown export with a sentinel at each page break.
+        document: The converted DoclingDocument.
 
     Returns:
-        The final text with human-readable markers, and one span per page
-        describing exactly where that page's text lies in it.
+        The canonical text with a visible marker before every page after the
+        first, and one span per page describing exactly where that page's
+        text lies in it — including the empty span of a page that produced
+        nothing, so no page's number ever shifts.
     """
-    pieces = marked.split(_PAGE_SENTINEL)
-
     text = ""
     spans: list[PageSpan] = []
-    for number, piece in enumerate(pieces, start=1):
-        if number > 1:
-            text += "\n" + PAGE_MARKER_FORMAT.format(page=number) + "\n"
+    for number in sorted(document.pages.keys()):
         start = len(text)
-        text += piece
+        # The marker belongs to the page it introduces, so the spans tile the
+        # text completely — every character is on exactly one page.
+        if spans:
+            text += "\n" + PAGE_MARKER_FORMAT.format(page=number) + "\n"
+        text += document.export_to_markdown(page_no=number)
         spans.append(PageSpan(page=number, start_offset=start, end_offset=len(text)))
 
     return text, spans
@@ -98,8 +114,8 @@ def extract_pdf(data: bytes, name: str = "document.pdf") -> ExtractionResult:
         name: The filename, used only for logging and Docling's bookkeeping.
 
     Returns:
-        The canonical text with page markers, page spans over that text, and
-        every detected table verbatim.
+        The canonical text with page markers, page spans over that text, every
+        detected table verbatim, and a warning per page that failed to parse.
     """
     from docling.datamodel.base_models import DocumentStream
 
@@ -109,8 +125,11 @@ def extract_pdf(data: bytes, name: str = "document.pdf") -> ExtractionResult:
     )
     document = converted.document
 
-    marked = document.export_to_markdown(page_break_placeholder=_PAGE_SENTINEL)
-    text, spans = _spans_from(marked)
+    # A page the parser could not read is degraded coverage, not a failed
+    # document: the caller reports it and the rest of the file still indexes.
+    warnings = [error.error_message for error in converted.errors]
+
+    text, spans = _assemble(document)
 
     tables: list[ExtractedTable] = []
     for index, table in enumerate(document.tables):
@@ -126,11 +145,12 @@ def extract_pdf(data: bytes, name: str = "document.pdf") -> ExtractionResult:
         )
 
     logger.info(
-        "%s: extracted %d page(s), %d table(s), %d character(s)",
+        "%s: extracted %d page(s), %d table(s), %d character(s), %d warning(s)",
         name,
         len(spans),
         len(tables),
         len(text),
+        len(warnings),
     )
 
-    return ExtractionResult(text=text, pages=spans, tables=tables)
+    return ExtractionResult(text=text, pages=spans, tables=tables, warnings=warnings)

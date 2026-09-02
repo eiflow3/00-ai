@@ -184,6 +184,9 @@ async def index_source(
     freshly_extracted = extraction is None
     if extraction is None:
         extraction = await asyncio.to_thread(extract_document, source.key, data)
+        # A page the extractor could not read is degraded coverage the run
+        # should report — as an error event, never as a failed file.
+        result.warnings.extend(extraction.warnings)
     yield "extracting", result
 
     # --- Describe tables ----------------------------------------------------
