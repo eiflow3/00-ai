@@ -43,8 +43,17 @@ export interface UseChatResult {
   failure: string | null
   /** A failure that prevented an answer entirely. */
   error: string | null
-  /** Ask a question, optionally naming which provider and model should answer. */
-  ask: (query: string, options?: Pick<ChatRequest, 'provider' | 'model'>) => Promise<void>
+  /**
+   * Ask a question, naming who answers and which chunking to answer from.
+   *
+   * `chunk_variant` is what makes an A/B comparison possible: two of these
+   * hooks, the same question and model, different variants, and the only thing
+   * that can explain a difference in the answers is how the file was cut.
+   */
+  ask: (
+    query: string,
+    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant'>,
+  ) => Promise<void>
   cancel: () => void
 }
 
@@ -65,7 +74,7 @@ export function useChat(): UseChatResult {
 
   const ask = useCallback(async (
     query: string,
-    options?: Pick<ChatRequest, 'provider' | 'model'>,
+    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant'>,
   ) => {
     const trimmed = query.trim()
     if (!trimmed) return

@@ -15,14 +15,26 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(
         ...,
         validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key"),
+        # Never in a repr. A traceback that formats this object would otherwise
+        # print the key into a terminal, a log file or a CI transcript.
+        repr=False,
     )
 
     # Pinecone configuration
     pinecone_api_key: str = Field(
         ...,
         validation_alias=AliasChoices("PINECONE_API_KEY", "pinecone_api_key"),
+        repr=False,
     )
     pinecone_index_name: str = "rag-index"
+
+    # Where chunking experiments are written.  A second index rather than a
+    # corner of the first one: production answers must never be able to return
+    # a chunk that only exists because somebody was testing a splitter, and an
+    # index boundary is the only guarantee of that which does not depend on
+    # every query remembering to filter.  Each experiment gets its own
+    # namespace inside it, so there is no limit on how many can coexist.
+    pinecone_lab_index_name: str = "rag-chunk-lab"
 
     # Embedding model — coupled to the *contents* of the Pinecone index, not to
     # the environment.  Chunk vectors and query vectors must come from this same
@@ -42,10 +54,12 @@ class Settings(BaseSettings):
     r2_access_key_id: str = Field(
         default="",
         validation_alias=AliasChoices("R2_ACCESS_KEY_ID", "r2_access_key_id"),
+        repr=False,
     )
     r2_secret_access_key: str = Field(
         default="",
         validation_alias=AliasChoices("R2_SECRET_ACCESS_KEY", "r2_secret_access_key"),
+        repr=False,
     )
     r2_bucket: str = Field(
         default="00-ai",
@@ -91,6 +105,7 @@ class Settings(BaseSettings):
     redis_password: str = Field(
         default="",
         validation_alias=AliasChoices("REDIS_PASSWORD", "redis_password"),
+        repr=False,
     )
     redis_db: int = Field(
         default=0,
@@ -226,6 +241,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(
         ...,
         validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key"),
+        repr=False,
     )
 
     # Any localhost/127.0.0.1 origin on a 517x port (Vite picks the next free one).

@@ -1,25 +1,32 @@
 /**
  * Application shell.
  *
- * Five screens following the pipeline: Sources puts files into the index, Chat
- * asks questions of it, Evaluations is where those answers get judged against
+ * Six screens following the pipeline: Sources puts files into the index,
+ * Chunking is where different ways of cutting those files get compared, Chat
+ * asks questions of them, Evaluations is where those answers get judged against
  * the chunks that produced them, Golden Sets is where the answer keys those
  * scores are measured against get drafted and signed off, and Prompts is the
- * wording all of it was written under. Five screens do not justify a router.
+ * wording all of it was written under. Six screens do not justify a router.
+ *
+ * The one piece of state that crosses screens lives here: pressing Ask on a
+ * chunking variant opens Chat already pointed at it, because the alternative is
+ * telling someone to switch tabs and re-select what they just clicked.
  */
 
 import { useState } from 'react'
 
 import { ChatView } from './features/chat/ChatView'
+import { ChunkingView } from './features/chunking/ChunkingView'
 import { GoldenView } from './features/golden/GoldenView'
 import { PromptsView } from './features/prompts/PromptsView'
 import { SourcesView } from './features/sources/SourcesView'
 import { TracesView } from './features/traces/TracesView'
 
-type Tab = 'sources' | 'chat' | 'evaluations' | 'golden' | 'prompts'
+type Tab = 'sources' | 'chunking' | 'chat' | 'evaluations' | 'golden' | 'prompts'
 
 const TABS: { value: Tab; label: string }[] = [
   { value: 'sources', label: 'Sources' },
+  { value: 'chunking', label: 'Chunking' },
   { value: 'chat', label: 'Chat' },
   { value: 'evaluations', label: 'Evaluations' },
   { value: 'golden', label: 'Golden Sets' },
@@ -28,6 +35,8 @@ const TABS: { value: Tab; label: string }[] = [
 
 function App() {
   const [tab, setTab] = useState<Tab>('sources')
+  // The variant Chat should open with, set by the Chunking tab's Ask button.
+  const [askVariant, setAskVariant] = useState('')
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -53,7 +62,15 @@ function App() {
 
       <main>
         {tab === 'sources' ? <SourcesView /> : null}
-        {tab === 'chat' ? <ChatView /> : null}
+        {tab === 'chunking' ? (
+          <ChunkingView
+            onAsk={(variantId) => {
+              setAskVariant(variantId)
+              setTab('chat')
+            }}
+          />
+        ) : null}
+        {tab === 'chat' ? <ChatView initialVariant={askVariant} /> : null}
         {tab === 'evaluations' ? <TracesView /> : null}
         {tab === 'golden' ? <GoldenView /> : null}
         {tab === 'prompts' ? <PromptsView /> : null}

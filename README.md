@@ -24,6 +24,7 @@ EVALUATE        answer + its chunks ──▶ a verdict per stage ──▶ SQLi
 - [Getting started](#getting-started)
 - [The screens](#the-screens)
 - [How indexing works](#how-indexing-works)
+- [Comparing chunking strategies](#comparing-chunking-strategies)
 - [How a file is linked to its vectors](#how-a-file-is-linked-to-its-vectors)
 - [How staleness is detected](#how-staleness-is-detected)
 - [How answers are evaluated](#how-answers-are-evaluated)
@@ -31,6 +32,7 @@ EVALUATE        answer + its chunks ──▶ a verdict per stage ──▶ SQLi
 - [Configuration](#configuration)
 - [Data on disk](#data-on-disk)
 - [The offline eval harness](#the-offline-eval-harness)
+- [Tests](#tests)
 - [Project layout](#project-layout)
 
 ---
@@ -46,6 +48,12 @@ the run continues and the page reattaches to its live progress.
 
 **Resume instead of restarting.** A run interrupted at chunk 400 of 500 picks up
 where it stopped. Re-indexing an unchanged file embeds nothing at all.
+
+**Compare ways of cutting a document.** The same file can be embedded under
+several chunking strategies at once, each isolated from the others and from the
+index the app answers from. Ask one question of two of them side by side, or put
+a golden set to all of them and get a ranking by how often each found the right
+passage.
 
 **Answer questions with citations.** Retrieval, prompt assembly and generation
 stream to the client as separate events, with the matched chunks, their
@@ -95,7 +103,11 @@ the service boundary, so no SDK type escapes into the application.
 |---|---|
 | `object_store.py` | R2 via the S3 API: list, head, get, put |
 | `text_extraction.py` | bytes → text, one extractor per extension |
-| `chunker.py` | token-aware splitting with overlap |
+| `chunker.py` | cutting **plus identity** — a segment becomes a vector id here |
+| `chunking/` | one module per strategy, behind a registry and a catalog |
+| `chunk_variants.py` | **the link** between a chunking configuration and where its vectors live |
+| `chunk_preview.py` | how a strategy would cut a file, without embedding it |
+| `chunk_sections.py` | maps a retrieved chunk back to the section it came from |
 | `embeddings.py` | text → vectors, and each model's width |
 | `vector_store.py` | Pinecone: upsert, query, list by prefix, fetch, delete |
 | `provenance.py` | **the link** between a stored file and its vectors |
@@ -115,6 +127,8 @@ the service boundary, so no SDK type escapes into the application.
 | `evaluation_store.py` | verdicts, withdrawal and restore |
 | `evaluation_catalog.py` | the verdicts and reason tags on offer |
 | `evaluation_export.py` | the judged set as JSONL |
+| `variant_scorer.py` | one golden set put to one chunking variant |
+| `variant_score_queue.py` | the comparison run, and the stream that reports it |
 | `run_store.py` | indexing run history |
 | `trace_db.py` | the SQLite connection behind traces |
 
@@ -215,10 +229,33 @@ and a single verdict.
   is refused while an indexing run is holding that file.
 - Expanding a row lists every stored chunk with its vector id and length.
 
+### Chunking
+
+Where different ways of cutting the same document get compared. Nothing on this
+screen can affect a production answer.
+
+- **The bench** — pick a file, a strategy and a geometry. It names the variant
+  it would create before anything is spent.
+- **Preview** — free: the chunk count, how even the cut is, how much of it is
+  repeated overlap, a bar per chunk, and the chunks themselves.
+- **Index all four** — one run, four variants, each embedded on its own terms
+  behind the same progress panel the Sources screen uses.
+- **Variants** — what is embedded right now, read back from the index rather
+  than a table, so it is right after a restart. A variant that holds fewer
+  vectors than its run said it should is called out rather than quietly listed.
+- **Scoreboard** — a golden set put to every variant, ranked by how often each
+  found the right passage, with a grid showing which question each one missed
+  and what it retrieved instead.
+
 ### Chat
 
 - Pick a provider and model from what the backend reports as actually
   configured, rather than a hardcoded list that drifts.
+- **Answer from** picks which chunking answers; ticking **Compare with** splits
+  the screen into two columns that run the same question, model and prompt
+  against two variants. Only two, because four columns of prose is not something
+  anyone reads — four strategies ranked by hit-rate is, and that is the
+  scoreboard's job.
 - A pipeline timeline fills in as the request runs — each step, what it produced,
   and how long it took, so the wait before the first token is accounted for
   rather than hidden behind a spinner. The steps are named by the server, so one
@@ -339,6 +376,39 @@ Written first — as it originally was — a half-finished file claimed to be
 `current` while its tail served text from a version that no longer existed. That
 was reproduced before it was fixed: 18 of 19 stored chunks stale, verdict
 `current`.
+
+---
+
+## Comparing chunking strategies
+
+How a document is cut decides what retrieval can find, and the only way to know
+which way is better is to try them against each other.
+
+A **variant** is a strategy plus its geometry — `recursive-512-64`. Four
+strategies ship: `boundary` (the original: a token window trimmed to a natural
+break), `fixed` (equal windows, cut wherever the count runs out), `recursive`
+(blank lines, then lines, then sentences, then spaces) and `structural` (one
+section to a chunk, using the document's own headings).
+
+Each variant's vectors live in **their own namespace in a separate index**, so a
+query against one cannot return another's chunks and nothing done here can reach
+a production answer.
+
+On the **Chunking** screen:
+
+1. Preview a strategy — free, nothing embedded, and it shows the shape of the
+   cut before you pay for it.
+2. Index the file under one strategy or all four. One run, one progress bar,
+   each variant embedded on its own terms.
+3. Ask the same question of two variants side by side on the Chat screen.
+4. Score every variant against a golden set. The ranking is by **retrieval
+   recall** — whether the passage the answer needed came back, which is what
+   chunking is responsible for — and a grid underneath shows which question each
+   variant missed and what it retrieved instead.
+
+Scoring reuses `golden_scorer.score_row`, the same function the offline harness
+in `evals/` uses, so the app and the harness cannot disagree about an answer.
+Full design: [docs/chunking-strategies.md](docs/chunking-strategies.md).
 
 ---
 
@@ -485,6 +555,22 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 | `GET` | `/sources/index/runs/{id}/events` | SSE progress; `?after=` to resume |
 | `DELETE` | `/sources/index/runs/{id}` | stop a run and clear its queue |
 
+### Chunking
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/chunking/strategies` | the ways a document can be cut, described for a person choosing |
+| `POST` | `/chunking/preview` | how a strategy would cut a file — nothing embedded, nothing charged |
+| `GET` | `/chunking/variants` | every variant holding vectors, read back from the index |
+| `DELETE` | `/chunking/variants/{id}` | drop a variant and its vectors; the file stays |
+| `POST` | `/chunking/score` | put a golden set to every variant; `202` with the run id |
+| `GET` | `/chunking/score/{id}/events` | SSE progress, ending with the ranking; `?after=` to resume |
+| `DELETE` | `/chunking/score/{id}` | stop a run, keeping what it measured |
+
+`POST /sources/index` takes a `variant` (`recursive-512-64`), which decides both
+how the file is cut and where its vectors land. `POST /chat` takes a
+`chunk_variant`, which decides where the question is searched.
+
 ### Golden sets
 
 | Method | Path | Purpose |
@@ -568,6 +654,7 @@ under their conventional names; everything else takes an `APP_` prefix.
 | `APP_HOST` | `127.0.0.1` | |
 | `APP_PORT` | `8000` | |
 | `APP_PINECONE_INDEX_NAME` | `rag-index` | created on first use |
+| `APP_PINECONE_LAB_INDEX_NAME` | `rag-chunk-lab` | where chunking experiments go, one namespace per variant; created on first use |
 | `APP_MAX_UPLOAD_BYTES` | `10485760` | 10 MB |
 | `APP_MAX_INDEX_QUEUE` | `50` | files that may wait at once |
 | `APP_CORS_ORIGINS` | `[]` | extra exact origins |
@@ -673,6 +760,45 @@ judgement on real questions nobody wrote a golden answer for.
 
 ---
 
+## Tests
+
+```bash
+cd backend
+uv run pytest            # offline, under a second
+uv run pytest --live     # also hits Pinecone, OpenAI and R2
+```
+
+**The default tier touches no network.** Its fakes sit at the vendor boundary —
+a namespace-aware in-memory index, a deterministic bag-of-words embedding, and
+object storage as a dict — so the queue, the indexing plan, the ingestion loop
+and every line of `vector_store` run for real. Mocking at the call site instead
+would prove only that the mock was called, which is no use for a feature whose
+central promise (one variant's vectors cannot be seen from another) is
+*delegated* to the vector store rather than enforced in the app.
+
+What it defends, in order of how expensive the failure would be:
+
+- vectors from one chunking variant never reach a query against another, and
+  none of them reach production;
+- re-indexing an unchanged variant embeds nothing, so a comparison does not cost
+  double;
+- the default strategy still cuts the corpus exactly as it did, because every
+  vector already in the production index was cut that way;
+- a preview really writes nothing;
+- an unanswerable question is not counted as a retrieval miss, which would drag
+  every variant's score down equally and hide a real difference;
+- deleting a file leaves nothing behind in any variant.
+
+**The live tier is one test**, opt-in, doing the real round trip against a
+throwaway variant and deleting it afterwards. A fake cannot notice the day a
+vendor renames an argument.
+
+The harness bars the storage and embedding clients outright rather than only
+patching the functions that call them. That is not caution for its own sake: a
+missed binding once let a test delete a real object out of the real bucket.
+
+---
+
 ## Project layout
 
 ```
@@ -686,6 +812,7 @@ judgement on real questions nobody wrote a golden answer for.
 │   │   ├── routers/             HTTP only: validate, delegate, serialise
 │   │   ├── schemas/             every request, response and event payload
 │   │   └── services/            all the logic, framework-agnostic
+│   ├── tests/                   smoke suite; vendors faked at the client seam
 │   ├── data/                    SQLite + logs (gitignored)
 │   └── .env                     credentials (gitignored)
 ├── frontend/
@@ -694,6 +821,7 @@ judgement on real questions nobody wrote a golden answer for.
 │       ├── components/          small shared pieces
 │       ├── features/
 │       │   ├── sources/         the corpus screen
+│       │   ├── chunking/        compare ways of cutting a document
 │       │   ├── chat/            ask and evaluate
 │       │   ├── traces/          the evaluations screen
 │       │   ├── golden/          draft and sign off answer keys

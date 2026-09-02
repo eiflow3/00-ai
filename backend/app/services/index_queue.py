@@ -60,12 +60,14 @@ from app.schemas.ingestion import (
 )
 from app.schemas.source import IndexState, SourceStatus
 from app.services import (
+    chunk_variants,
     index_registry,
     ingestion,
     run_store,
     source_cache,
     sync_status,
 )
+from app.services.index_registry import QueuedFile
 from app.services.text_extraction import UnsupportedSourceType
 
 logger = logging.getLogger(__name__)
@@ -100,13 +102,17 @@ class _Job:
         self.job_id = uuid.uuid4().hex[:16]
         self.state = IndexRunState.RUNNING
 
-        # Chunk geometry and model are fixed when the run starts. Files added
-        # later join on these terms rather than bringing their own, so one run
-        # cannot produce chunks of two different shapes.
+        # The embedding model is fixed for the run: mixing two of them in one
+        # index would make similarity scores meaningless, and that is a
+        # different feature from mixing chunk shapes.
+        self.embedding_model = request.embedding_model
+
+        # Chunk geometry is *not* fixed here. It rides on each queued entry
+        # instead, because embedding one document under four strategies is the
+        # ordinary case now, and a run-wide geometry would silently embed three
+        # of the four the first one's way.
         self.chunk_size = request.chunk_size
         self.chunk_overlap = request.chunk_overlap
-        self.embedding_model = request.embedding_model
-        self.force = request.force
 
         # Events emitted so far, each under an increasing cursor. This is what
         # a re-attaching client replays.
@@ -194,6 +200,11 @@ async def enqueue(request: IndexRequest) -> EnqueueResponse:
     """
     keys, missing = await _resolve_keys(request)
 
+    # A named variant decides both how the files are cut and where they land,
+    # and is validated here so a bad name is a rejected request rather than a
+    # namespace quietly brought into existence by the first write.
+    config, variant = chunk_variants.resolve(request.variant, request.chunking)
+
     async with _lock:
         job = _active
         started = False
@@ -204,7 +215,11 @@ async def enqueue(request: IndexRequest) -> EnqueueResponse:
             started = True
 
         accepted, already, rejected = await index_registry.enqueue(
-            keys, settings.max_index_queue
+            keys,
+            settings.max_index_queue,
+            variant=variant,
+            config=config,
+            force=request.force,
         )
         job.total += len(accepted)
 
@@ -329,13 +344,13 @@ async def _worker(job: _Job) -> None:
             # file enqueued at the moment the queue empties would be stranded
             # with no worker to pick it up.
             async with _lock:
-                source_key = await index_registry.dequeue()
-                if source_key is None:
+                entry = await index_registry.dequeue()
+                if entry is None:
                     job.state = IndexRunState.COMPLETED
                     break
 
             try:
-                await _process(job, source_key)
+                await _process(job, entry)
             finally:
                 index_registry.release()
 
@@ -372,16 +387,28 @@ async def _worker(job: _Job) -> None:
         index_registry.release()
 
 
-async def _process(job: _Job, source_key: str) -> None:
-    """Index one file, emitting its stages, completion or failure."""
-    await run_store.file_started(job.job_id, source_key)
+async def _process(job: _Job, entry: QueuedFile) -> None:
+    """Index one file on the terms it was queued with.
+
+    The entry carries its own chunking configuration and its own destination,
+    so two entries for the same file cut it two different ways and write to two
+    different places — which is the whole of how a chunking comparison is run.
+    """
+    source_key = entry.source_key
+    space = chunk_variants.space_for(entry.variant)
+
+    await run_store.file_started(job.job_id, source_key, entry.variant)
 
     source = await ingestion.resolve_source(source_key)
     if source is None:
         # Queued earlier, deleted since. Not a failure of the pipeline.
         job.failed += 1
         await run_store.file_finished(
-            job.job_id, source_key, "missing", error="Deleted before it was indexed."
+            job.job_id,
+            source_key,
+            "missing",
+            error="Deleted before it was indexed.",
+            variant=entry.variant,
         )
         await job.emit(
             IndexErrorEvent(
@@ -400,10 +427,10 @@ async def _process(job: _Job, source_key: str) -> None:
     try:
         async for stage, result in ingestion.index_source(
             source,
-            job.chunk_size,
-            job.chunk_overlap,
+            entry.config,
             job.embedding_model,
-            force=job.force,
+            force=entry.force,
+            space=space,
         ):
             await job.emit(
                 IndexProgressEvent(
@@ -422,7 +449,11 @@ async def _process(job: _Job, source_key: str) -> None:
         job.skipped += 1
         job.processed_keys.append(source_key)
         await run_store.file_finished(
-            job.job_id, source_key, IndexState.UNSUPPORTED.value, error=str(exc)
+            job.job_id,
+            source_key,
+            IndexState.UNSUPPORTED.value,
+            error=str(exc),
+            variant=entry.variant,
         )
         await job.emit(
             IndexCompletedEvent(
@@ -452,6 +483,7 @@ async def _process(job: _Job, source_key: str) -> None:
             chunk_count=result.chunk_count,
             reused=result.reused,
             error="Stopped mid-file.",
+            variant=entry.variant,
         )
         raise
 
@@ -460,7 +492,7 @@ async def _process(job: _Job, source_key: str) -> None:
         job.failed += 1
         logger.exception("Run %s: %s failed: %s", job.job_id, source_key, exc)
         await run_store.file_finished(
-            job.job_id, source_key, "failed", error=str(exc)
+            job.job_id, source_key, "failed", error=str(exc), variant=entry.variant
         )
         await job.emit(
             IndexErrorEvent(
@@ -479,8 +511,10 @@ async def _process(job: _Job, source_key: str) -> None:
 
     # Per file rather than per run: a client watching the stream refreshes its
     # list as each file completes, and would otherwise be served the listing as
-    # it stood before the run started.
-    await source_cache.invalidate(source_key)
+    # it stood before the run started. A variant writes nowhere the sources
+    # listing reads, so there is nothing of its to invalidate.
+    if not entry.variant:
+        await source_cache.invalidate(source_key)
 
     await run_store.file_finished(
         job.job_id,
@@ -489,6 +523,7 @@ async def _process(job: _Job, source_key: str) -> None:
         chunk_count=result.chunk_count,
         reused=result.reused,
         pruned=result.pruned,
+        variant=entry.variant,
     )
     await job.emit(
         IndexCompletedEvent(
@@ -510,13 +545,14 @@ async def _close(job: _Job) -> None:
     job.finished_monotonic = time.monotonic()
 
     # Re-read each file's status from both sides rather than asserting it, so
-    # the client's list refreshes from what is actually stored.
+    # the client's list refreshes from what is actually stored. Deduplicated
+    # because one run can process the same file several times — once per
+    # chunking variant — and its status is the same after each.
     statuses: list[SourceStatus] = []
-    if job.processed_keys:
+    keys = list(dict.fromkeys(job.processed_keys))
+    if keys:
         statuses = list(
-            await asyncio.gather(
-                *(sync_status.get_status(key) for key in job.processed_keys)
-            )
+            await asyncio.gather(*(sync_status.get_status(key) for key in keys))
         )
 
     await job.emit(

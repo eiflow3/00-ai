@@ -26,7 +26,7 @@ import re
 from typing import Optional
 
 from app.schemas.golden import DocumentSection, SectionLevel
-from app.services.chunker import split_text
+from app.services.chunking.boundary import cut as boundary_cut
 
 # A horizontal rule under or over a heading, as the annual report writes them.
 # Eight is short enough to catch a modest underline, long enough that a line of
@@ -363,10 +363,10 @@ def _slices(text: str) -> list[DocumentSection]:
     """
     sections: list[DocumentSection] = []
 
-    for content, start_offset, end_offset in split_text(
+    for segment in boundary_cut(
         text, chunk_size=FALLBACK_SLICE_TOKENS, chunk_overlap=0
     ):
-        body = content.strip()
+        body = segment.content.strip()
         if not body:
             continue
         sections.append(
@@ -374,8 +374,8 @@ def _slices(text: str) -> list[DocumentSection]:
                 title=_opening_title(body.splitlines()),
                 level=SectionLevel.PREAMBLE,
                 body=body,
-                start_line=text.count(NEWLINE, 0, start_offset),
-                end_line=text.count(NEWLINE, 0, end_offset) + 1,
+                start_line=text.count(NEWLINE, 0, segment.start_offset),
+                end_line=text.count(NEWLINE, 0, segment.end_offset) + 1,
             )
         )
 

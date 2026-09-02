@@ -10,6 +10,10 @@ import { getSse, postSse } from './sse'
 import type {
   ChatEvent,
   ChatRequest,
+  ChunkPreviewResponse,
+  ChunkStrategySpec,
+  ChunkVariant,
+  ChunkingConfig,
   DeindexResponse,
   DeleteResponse,
   EnqueueResponse,
@@ -36,8 +40,14 @@ import type {
   Prompt,
   PromptPreview,
   PromptPreviewRequest,
+  ScoreEnqueueResponse,
+  ScoreEvent,
+  ScoreEventWithCursor,
+  ScoreRun,
   SourceDetail,
   SourceStatus,
+  VariantDeleteResponse,
+  VariantScoreRequest,
   TraceDeleteResponse,
   TraceDetail,
   TracePage,
@@ -595,4 +605,103 @@ export function restoreGoldenSet(setId: string): Promise<GoldenSetDetail> {
  */
 export function goldenExportUrl(setId: string): string {
   return url(`/golden/sets/${encodeURIComponent(setId)}/export`)
+}
+
+// --- Chunking: previewing, listing and comparing variants -------------------
+
+/**
+ * List the ways this deployment can cut a document.
+ *
+ * The picker is built from this rather than a hardcoded list, so a strategy
+ * added on the backend appears without a release on this side.
+ */
+export function listStrategies(signal?: AbortSignal): Promise<ChunkStrategySpec[]> {
+  return request<ChunkStrategySpec[]>(url('/chunking/strategies'), { signal })
+}
+
+/**
+ * See how a strategy would cut a file. Nothing is embedded and nothing is paid.
+ *
+ * This is how a strategy gets chosen: look at the shape of the cut first, and
+ * only index the ones worth the embedding cost.
+ */
+export function previewChunking(
+  sourceKey: string,
+  config: ChunkingConfig,
+  signal?: AbortSignal,
+): Promise<ChunkPreviewResponse> {
+  return request<ChunkPreviewResponse>(url('/chunking/preview'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_key: sourceKey, config }),
+    signal,
+  })
+}
+
+/**
+ * List every variant that currently holds vectors.
+ *
+ * Read back from the index itself, so it is right after a restart and cannot
+ * claim a variant somebody deleted from the Pinecone console.
+ */
+export function listVariants(signal?: AbortSignal): Promise<ChunkVariant[]> {
+  return request<ChunkVariant[]>(url('/chunking/variants'), { signal })
+}
+
+/** Drop a variant and every vector in it. The source files are untouched. */
+export function deleteVariant(variantId: string): Promise<VariantDeleteResponse> {
+  return request<VariantDeleteResponse>(
+    url(`/chunking/variants/${encodeURIComponent(variantId)}`),
+    { method: 'DELETE' },
+  )
+}
+
+/**
+ * Start a comparison run: the same golden set put to every variant.
+ *
+ * Deliberately not a stream. Scoring four variants against twenty questions is
+ * minutes of work, so this only starts it; progress is read from
+ * `attachVariantScore`, which survives a reload.
+ */
+export function startVariantScore(
+  body: VariantScoreRequest,
+  signal?: AbortSignal,
+): Promise<ScoreEnqueueResponse> {
+  return request<ScoreEnqueueResponse>(url('/chunking/score'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
+/**
+ * Follow one comparison run, replaying whatever was missed.
+ *
+ * @param jobId - The run to follow.
+ * @param after - Cursor already seen; the default replays from the start.
+ * @param signal - Aborting detaches the stream; the run itself keeps going.
+ */
+export async function* attachVariantScore(
+  jobId: string,
+  after = -1,
+  signal?: AbortSignal,
+): AsyncGenerator<ScoreEventWithCursor> {
+  const target = url(`/chunking/score/${encodeURIComponent(jobId)}/events`, {
+    after: String(after),
+  })
+
+  for await (const raw of getSse(target, signal)) {
+    yield {
+      event: { event: raw.event, data: JSON.parse(raw.data) } as ScoreEvent,
+      cursor: raw.id === '' ? after : Number(raw.id),
+    }
+  }
+}
+
+/** Stop a comparison run, keeping whatever it already measured. */
+export function stopVariantScore(jobId: string): Promise<ScoreRun> {
+  return request<ScoreRun>(url(`/chunking/score/${encodeURIComponent(jobId)}`), {
+    method: 'DELETE',
+  })
 }

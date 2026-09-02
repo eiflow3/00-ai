@@ -146,6 +146,18 @@ export interface IndexRequest {
   prefix?: string
   only_stale?: boolean
   force?: boolean
+  /** How to cut the text. Ignored when `variant` is set. */
+  strategy?: ChunkStrategy
+  chunk_size?: number
+  chunk_overlap?: number
+  /**
+   * Variant to embed into, e.g. `recursive-512-64`.
+   *
+   * Empty indexes into the production index the app answers from. A variant's
+   * name fully determines how it is cut, so the three fields above are ignored
+   * when one is given.
+   */
+  variant?: string
 }
 
 /** Where a run stands. Every state but `running` is terminal. */
@@ -369,6 +381,14 @@ export interface ChatRequest {
   use_rag?: boolean
   top_k?: number
   score_threshold?: number
+  /**
+   * Which chunking variant to answer from. Empty is the production index.
+   *
+   * The whole basis of the comparison: hold the question, the model, the
+   * prompt and `top_k` still, change only this, and the difference in the
+   * answer is the difference the chunking made.
+   */
+  chunk_variant?: string
 }
 
 /**
@@ -859,4 +879,204 @@ export type GoldenEvent =
 export interface GoldenEventWithCursor {
   event: GoldenEvent
   cursor: number
+}
+
+// --- Chunking: comparing ways to cut a document -----------------------------
+
+/**
+ * How a document's text is cut into embeddable segments.
+ *
+ * Mirrors the backend enum. The picker is built from `listStrategies`, not from
+ * this type — a strategy added on the backend appears without a change here.
+ */
+export type ChunkStrategy = 'boundary' | 'fixed' | 'recursive' | 'structural'
+
+/** A strategy and the geometry it runs at. Together they identify a variant. */
+export interface ChunkingConfig {
+  strategy: ChunkStrategy
+  chunk_size: number
+  chunk_overlap: number
+}
+
+/** One strategy on offer, described for a person choosing between them. */
+export interface ChunkStrategySpec {
+  id: ChunkStrategy
+  label: string
+  /** One line on what it does to a document. */
+  summary: string
+  /** Where it tends to win or lose. Shown on request, not in the list. */
+  detail: string
+  /** False when the overlap control does nothing for this strategy. */
+  honours_overlap: boolean
+  /** True when cutting itself calls a paid API, beyond the embeddings. */
+  costs_api_calls: boolean
+}
+
+/** One chunk as a preview shows it, before anything is embedded. */
+export interface PreviewChunk {
+  chunk_index: number
+  content: string
+  token_count: number
+  char_count: number
+  start_offset: number
+  end_offset: number
+  /** Why the chunk ends where it does — the heading it sits under, say. */
+  note: string
+}
+
+/**
+ * The shape of a whole cut.
+ *
+ * What a preview is really for: two strategies at the same nominal size can
+ * produce twenty-four chunks and eleven, and that decides more about retrieval
+ * than anything visible in any one chunk.
+ */
+export interface ChunkPreviewStats {
+  chunk_count: number
+  total_tokens: number
+  document_tokens: number
+  min_tokens: number
+  median_tokens: number
+  max_tokens: number
+  /** Share of embedded tokens that repeat a neighbouring chunk. */
+  repeated_fraction: number
+}
+
+export interface ChunkPreviewResponse {
+  source_key: string
+  /** The variant this configuration would create if it were indexed. */
+  variant_id: string
+  label: string
+  config: ChunkingConfig
+  stats: ChunkPreviewStats
+  chunks: PreviewChunk[]
+}
+
+/** Whether a variant holds every vector its last run said it should. */
+export type VariantState = 'ready' | 'interrupted'
+
+/** One strategy-and-geometry combination that has been embedded. */
+export interface ChunkVariant {
+  variant_id: string
+  label: string
+  config: ChunkingConfig
+  embedding_model: string
+  source_keys: string[]
+  vector_count: number
+  /** What the last run said it should hold. Disagreement means interrupted. */
+  chunk_total: number
+  state: VariantState
+  embedded_at: string | null
+}
+
+export interface VariantDeleteResponse {
+  variant_id: string
+  deleted: number
+}
+
+// --- Chunking: scoring one variant against a golden set ---------------------
+
+export interface VariantScoreRequest {
+  set_id: string
+  /** Empty means every variant holding the set's source file. */
+  variants?: string[]
+  top_k?: number
+  /** False measures retrieval only, at no model cost. */
+  generate?: boolean
+  provider?: string
+  model?: string
+}
+
+/** How one variant did on one question. */
+export interface RowScore {
+  question_id: string
+  question: string
+  /** Null when the run did not generate answers. */
+  correct: boolean | null
+  recall: number | null
+  precision: number | null
+  top_score: number
+  gold_sections: string[]
+  retrieved_sections: string[]
+  answer: string
+  reasons: string[]
+  error: string
+}
+
+/** One variant's result across the whole golden set. */
+export interface VariantScore {
+  variant_id: string
+  label: string
+  config: ChunkingConfig | null
+  rows: number
+  correct: number
+  recall: number
+  precision: number
+  failed: number
+  duration_seconds: number
+  scores: RowScore[]
+}
+
+export interface ScoreStartedEventData {
+  job_id: string
+  set_id: string
+  source_key: string
+  variants: string[]
+  rows: number
+  generating: boolean
+}
+
+export interface ScoreProgressEventData {
+  variant_id: string
+  completed: number
+  total: number
+  score: RowScore
+}
+
+export interface ScoreErrorEventData {
+  variant_id: string
+  question_id: string
+  message: string
+}
+
+export interface ScoreSummaryEventData {
+  /** Every variant, ranked by retrieval recall. */
+  scores: VariantScore[]
+  winner: string
+  duration_seconds: number
+}
+
+/** Every event the scoring stream can emit. */
+export type ScoreEvent =
+  | { event: 'started'; data: ScoreStartedEventData }
+  | { event: 'progress'; data: ScoreProgressEventData }
+  | { event: 'variant'; data: VariantScore }
+  | { event: 'error'; data: ScoreErrorEventData }
+  | { event: 'summary'; data: ScoreSummaryEventData }
+
+/** One scoring event with the cursor to resume from. */
+export interface ScoreEventWithCursor {
+  event: ScoreEvent
+  cursor: number
+}
+
+export interface ScoreEnqueueResponse {
+  job_id: string
+  variants: string[]
+  rows: number
+}
+
+export type ScoreRunState = 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface ScoreRun {
+  job_id: string
+  set_id: string
+  state: ScoreRunState
+  variants: string[]
+  completed: number
+  total: number
+  started_at: string | null
+  finished_at: string | null
+  error: string
+  last_cursor: number
 }

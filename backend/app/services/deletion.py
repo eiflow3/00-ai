@@ -22,7 +22,7 @@ deleted, and nothing later would reveal where they came from.
 
 import logging
 
-from app.services import index_catalog, index_registry, source_cache
+from app.services import chunk_variants, index_catalog, index_registry, source_cache
 from app.services.object_store import delete_object
 
 logger = logging.getLogger(__name__)
@@ -91,7 +91,8 @@ async def delete_source(source_key: str) -> tuple[int, bool]:
         How many vectors were deleted, and whether an object was actually
         removed from storage. Both can be zero-ish: deleting a key that is
         already gone from both sides reaches the same end state, so it is
-        reported rather than raised.
+        reported rather than raised. The count includes any copies held by a
+        chunking variant.
 
     Raises:
         DeletionBlocked: While the pipeline is holding the file.
@@ -101,6 +102,14 @@ async def delete_source(source_key: str) -> tuple[int, bool]:
     # Vectors first: a failure after this point leaves a file that reads as
     # `not_indexed`, which is recoverable, rather than orphaned vectors.
     deleted = await index_catalog.delete_document(source_key)
+
+    # And the same file's copies inside every chunking experiment. Deindexing
+    # deliberately does not do this — that withdraws a file from retrieval and
+    # leaves it re-indexable — but a file that is *gone* leaves nothing behind
+    # anywhere, or a comparison run would score four strategies against text
+    # nobody can look up any more.
+    deleted += await chunk_variants.forget_source(source_key)
+
     removed = await delete_object(source_key)
 
     await source_cache.invalidate(source_key)

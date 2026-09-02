@@ -44,6 +44,7 @@ from app.schemas.source import (
     UploadResponse,
 )
 from app.services import deletion, index_queue, sync_status, uploads
+from app.services.chunk_variants import UnknownVariant
 from app.services.deletion import DeletionBlocked
 from app.services.uploads import UploadRejected
 
@@ -135,7 +136,8 @@ async def index_sources(body: IndexRequest) -> EnqueueResponse:
         refused for the queue limit, or missing from storage.
 
     Raises:
-        HTTPException: 400 if the chunk geometry cannot make progress.
+        HTTPException: 400 if the chunk geometry cannot make progress, or the
+            named variant is not one this app can run.
     """
     if body.chunk_overlap >= body.chunk_size:
         raise HTTPException(
@@ -146,7 +148,13 @@ async def index_sources(body: IndexRequest) -> EnqueueResponse:
             ),
         )
 
-    return await index_queue.enqueue(body)
+    try:
+        return await index_queue.enqueue(body)
+    except UnknownVariant as exc:
+        # Reported here rather than left to fail inside the run: a variant name
+        # nobody can parse would otherwise create a namespace on first write
+        # and quietly become a real experiment.
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get(

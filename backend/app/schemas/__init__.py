@@ -7,6 +7,14 @@ from app.schemas.common import EchoRequest, EchoResponse, HealthResponse
 # --- Data phase schemas ---
 from app.schemas.document import Document
 from app.schemas.chunk import Chunk
+from app.schemas.chunking import (
+    ChunkPreviewRequest,
+    ChunkPreviewResponse,
+    ChunkStrategy,
+    ChunkStrategySpec,
+    ChunkVariant,
+    ChunkingConfig,
+)
 from app.schemas.embedding import Embedding, EmbeddingRequest
 
 # --- Retrieval phase schemas ---
@@ -42,6 +50,12 @@ __all__ = [
     # Data phase
     "Document",
     "Chunk",
+    "ChunkingConfig",
+    "ChunkPreviewRequest",
+    "ChunkPreviewResponse",
+    "ChunkStrategy",
+    "ChunkStrategySpec",
+    "ChunkVariant",
     "Embedding",
     "EmbeddingRequest",
     # Retrieval phase

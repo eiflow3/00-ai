@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
 from app.schemas.chunk import Chunk
+from app.schemas.chunking import ChunkingConfig
 from app.schemas.source import SourceObject
 from app.services import index_catalog, index_plan
 from app.services.chunker import chunk_document
@@ -43,7 +44,7 @@ from app.services.embeddings import embed_texts
 from app.services.object_store import get_object, head_object
 from app.services.provenance import build_metadata, vector_id_for
 from app.services.text_extraction import extract_text
-from app.services.vector_store import upsert_chunks
+from app.services.vector_store import VectorSpace, upsert_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -135,19 +136,21 @@ def _records_for(
 
 async def index_source(
     source: SourceObject,
-    chunk_size: int,
-    chunk_overlap: int,
+    config: ChunkingConfig,
     embedding_model: str,
     force: bool = False,
+    space: Optional[VectorSpace] = None,
 ) -> AsyncIterator[tuple[str, IngestionResult]]:
     """Embed one source file, yielding after each stage completes.
 
     Args:
         source: The object to index, as listed by the store.
-        chunk_size: Maximum tokens per chunk.
-        chunk_overlap: Tokens repeated between consecutive chunks.
+        config: How to cut the file — which strategy, at what size and overlap.
         embedding_model: Model used to embed the chunks.
         force: Re-embed every chunk even if the index already holds it.
+        space: Where the vectors go. Defaults to production; a chunking
+            experiment passes its own namespace so it cannot overwrite the
+            vectors the app answers from.
 
     Yields:
         The name of each stage as it finishes, with the running result.
@@ -163,21 +166,25 @@ async def index_source(
     yield "loading", result
 
     # --- Chunk ------------------------------------------------------------
-    chunks = chunk_document(source.key, text, chunk_size, chunk_overlap)
+    chunks = await chunk_document(
+        source.key, text, config, embedding_model=embedding_model
+    )
     result.chunk_count = len(chunks)
     yield "chunking", result
 
     # A file with no readable text still counts as indexed — but it has no
     # vectors, so clear whatever a previous run left behind for it.
     if not chunks:
-        result.pruned = await index_catalog.delete_document(source.key)
+        result.pruned = await index_catalog.delete_document(source.key, space)
         logger.info("%s: no readable text; removed %d vector(s)", source.key, result.pruned)
         yield "upserting", result
         return
 
     # --- Plan -------------------------------------------------------------
     # What the index already holds correctly is work this run does not repeat.
-    plan = await index_plan.plan_for(source.key, chunks, embedding_model, force=force)
+    plan = await index_plan.plan_for(
+        source.key, chunks, embedding_model, force=force, space=space
+    )
     result.reused = plan.reused
     result.embedded = len(plan.embed)
 
@@ -207,12 +214,12 @@ async def index_source(
             embedded_at=embedded_at,
         )
 
-        await asyncio.to_thread(upsert_chunks, records, embedding_model)
+        await asyncio.to_thread(upsert_chunks, records, embedding_model, space)
 
     # Vectors the file no longer produces: a shrunken tail, or ids from a
     # geometry that no longer applies. Deleted after the write, so the document
     # is never briefly missing a chunk it does have.
-    result.pruned = await index_catalog.prune_vectors(plan.prune)
+    result.pruned = await index_catalog.prune_vectors(plan.prune, space)
 
     logger.info(
         "%s: %d chunk(s) — %d embedded, %d reused, %d pruned",

@@ -11,6 +11,7 @@ import asyncio
 from typing import Optional
 
 from app.schemas.retrieval import RetrievedChunk, RetrievalResult
+from app.services import chunk_variants
 from app.services.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_MODEL_METADATA_KEY,
@@ -101,6 +102,7 @@ async def retrieve(
     score_threshold: float = 0.0,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     timeline: Optional[Timeline] = None,
+    variant: str = chunk_variants.PRODUCTION_VARIANT,
 ) -> RetrievalResult:
     """Embed the query, search the vector store, and return ranked chunks.
 
@@ -114,11 +116,23 @@ async def retrieve(
         score_threshold: Drop matches scoring below this value.
         embedding_model: Model used to embed the query.
         timeline: Where to report each step. Omitted when nobody is watching.
+        variant: Which chunking variant to search. Empty — the default — is the
+            production index. Naming one searches only that variant's vectors,
+            which is what makes two ways of cutting the same document
+            comparable: the question, the model and the prompt are held still,
+            and the only thing that differs is where the chunks came from.
 
     Returns:
         A RetrievalResult with chunks ordered by descending similarity score.
+
+    Raises:
+        UnknownVariant: If a variant is named that this app cannot run.
     """
     timeline = timeline or detached()
+
+    # Resolved before anything is embedded, so a bad variant fails the request
+    # rather than costing an embedding call first.
+    space = chunk_variants.space_for(variant)
 
     # 1. Embed the query with the same model used for the stored chunks.
     async with timeline.stage("embedding", "Embedding the question") as stage:
@@ -128,14 +142,17 @@ async def retrieve(
     # 2. Search Pinecone. The client is synchronous, so run it off the event
     #    loop — otherwise the network call blocks every other request.
     async with timeline.stage("search", "Searching the index") as stage:
-        matches = await asyncio.to_thread(query_similar, vector, top_k)
+        matches = await asyncio.to_thread(query_similar, vector, top_k, space)
 
         # Refuse to score across embedding spaces — a model mismatch here would
         # otherwise surface as confident-looking but unrelated chunks. It sits
         # inside the stage so the mismatch is reported against the search that
         # produced it.
         _assert_matching_model(matches, embedding_model)
-        stage.note(f"{len(matches)} match(es) returned")
+        stage.note(
+            f"{len(matches)} match(es) returned"
+            + (f" from {variant}" if variant else "")
+        )
 
     # 3. Normalise the vendor response into our schema, then split on the
     #    threshold and order each side best-first. The weak matches are returned

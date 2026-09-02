@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from app.docs.chat import CHAT_COMPONENT_SCHEMAS, CHAT_DESCRIPTION, CHAT_RESPONSES
+from app.docs.chunking import CHUNKING_COMPONENT_SCHEMAS, CHUNKING_TAG
 from app.docs.golden import GOLDEN_COMPONENT_SCHEMAS, GOLDEN_TAG
 from app.docs.evaluations import EVALUATIONS_TAG
 from app.docs.prompts import PROMPTS_TAG
@@ -28,6 +29,7 @@ from app.docs.traces import TRACES_TAG
 # a route signature, so without this they resolve to nothing in the docs UI.
 _EXTRA_COMPONENT_SCHEMAS: dict[str, Any] = {
     **CHAT_COMPONENT_SCHEMAS,
+    **CHUNKING_COMPONENT_SCHEMAS,
     **SOURCES_COMPONENT_SCHEMAS,
     **GOLDEN_COMPONENT_SCHEMAS,
 }
@@ -55,6 +57,7 @@ def register_openapi_components(app: FastAPI) -> None:
 __all__ = [
     "CHAT_DESCRIPTION",
     "CHAT_RESPONSES",
+    "CHUNKING_TAG",
     "EVALUATIONS_TAG",
     "GOLDEN_TAG",
     "PROMPTS_TAG",

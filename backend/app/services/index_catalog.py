@@ -29,6 +29,7 @@ from app.services.provenance import (
     vector_id_prefix_for,
 )
 from app.services.vector_store import (
+    VectorSpace,
     delete_vectors,
     fetch_vectors,
     list_vector_ids,
@@ -54,17 +55,20 @@ def _as_int(value: Any) -> int:
         return 0
 
 
-async def list_vector_ids_for(source_key: str) -> list[str]:
+async def list_vector_ids_for(
+    source_key: str, space: Optional[VectorSpace] = None
+) -> list[str]:
     """List every vector id belonging to one source file.
 
     Args:
         source_key: The object key within the bucket.
+        space: Which index and namespace to look in. Defaults to production.
 
     Returns:
         The file's vector ids, sorted so they run in chunk order.
     """
     prefix = vector_id_prefix_for(source_key)
-    ids = await asyncio.to_thread(list_vector_ids, prefix)
+    ids = await asyncio.to_thread(list_vector_ids, prefix, space)
     # Ids are zero-padded, so a lexical sort is chunk order.
     return sorted(ids)
 
@@ -137,7 +141,7 @@ def _to_chunks(ids: list[str], records: dict[str, dict[str, Any]]) -> list[Sourc
 
 
 async def read_document(
-    source_key: str, ids: list[str]
+    source_key: str, ids: list[str], space: Optional[VectorSpace] = None
 ) -> tuple[Optional[IndexedDocument], list[SourceChunk]]:
     """Read one file's record and every chunk of it, from a known id list.
 
@@ -148,6 +152,7 @@ async def read_document(
     Args:
         source_key: The object key within the bucket.
         ids: The file's vector ids, as returned by `list_vector_ids_for`.
+        space: Which index and namespace to read. Defaults to production.
 
     Returns:
         The index's record of the file and its chunks, or `(None, [])` when
@@ -156,7 +161,7 @@ async def read_document(
     if not ids:
         return None, []
 
-    records = await asyncio.to_thread(fetch_vectors, ids)
+    records = await asyncio.to_thread(fetch_vectors, ids, space)
     metadata = _metadata_of(records.get(ids[0], {}))
 
     return (
@@ -187,20 +192,23 @@ async def get_indexed_document(source_key: str) -> Optional[IndexedDocument]:
     )
 
 
-async def get_chunks(source_key: str) -> list[SourceChunk]:
+async def get_chunks(
+    source_key: str, space: Optional[VectorSpace] = None
+) -> list[SourceChunk]:
     """Return every chunk the index holds for one source file, in order.
 
     Args:
         source_key: The object key within the bucket.
+        space: Which index and namespace to read. Defaults to production.
 
     Returns:
         The file's indexed chunks, ordered by position in the document.
     """
-    ids = await list_vector_ids_for(source_key)
+    ids = await list_vector_ids_for(source_key, space)
     if not ids:
         return []
 
-    return _to_chunks(ids, await asyncio.to_thread(fetch_vectors, ids))
+    return _to_chunks(ids, await asyncio.to_thread(fetch_vectors, ids, space))
 
 
 async def list_indexed_documents() -> dict[str, IndexedDocument]:
@@ -261,23 +269,30 @@ async def list_indexed_source_keys() -> set[str]:
     return set(await list_indexed_documents())
 
 
-async def delete_document(source_key: str) -> int:
+async def delete_document(
+    source_key: str, space: Optional[VectorSpace] = None
+) -> int:
     """Remove every vector belonging to one source file.
 
     Args:
         source_key: The object key within the bucket.
+        space: Which index and namespace to delete from. Defaults to
+            production — a caller deleting an experiment's copy of a file has
+            to say so, so a slip cannot empty the live index.
 
     Returns:
         How many vectors were deleted.
     """
-    ids = await list_vector_ids_for(source_key)
+    ids = await list_vector_ids_for(source_key, space)
     if not ids:
         return 0
 
-    return await asyncio.to_thread(delete_vectors, ids)
+    return await asyncio.to_thread(delete_vectors, ids, space)
 
 
-async def prune_vectors(vector_ids: list[str]) -> int:
+async def prune_vectors(
+    vector_ids: list[str], space: Optional[VectorSpace] = None
+) -> int:
     """Delete a named set of vectors.
 
     Used by an indexing run to remove exactly the vectors its plan identified
@@ -285,6 +300,7 @@ async def prune_vectors(vector_ids: list[str]) -> int:
 
     Args:
         vector_ids: The ids to remove.
+        space: Which index and namespace they are in. Defaults to production.
 
     Returns:
         How many vectors were deleted.
@@ -292,7 +308,7 @@ async def prune_vectors(vector_ids: list[str]) -> int:
     if not vector_ids:
         return 0
 
-    return await asyncio.to_thread(delete_vectors, vector_ids)
+    return await asyncio.to_thread(delete_vectors, vector_ids, space)
 
 
 async def prune_chunks_beyond(source_key: str, chunk_count: int) -> int:

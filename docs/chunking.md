@@ -12,6 +12,14 @@ break in the final quarter of each window, and identical for every supported
 file type.** There is no per-format chunker. A `.md` file and a `.txt` file
 follow byte-for-byte the same path.
 
+That describes the **default** strategy, `boundary`, which is what an untouched
+request still gets. It is now one of four, selectable per run, and a document
+can be embedded under several of them at once to find out which retrieves best.
+The strategies, how they are isolated from each other and from production, and
+how the comparison is scored are in
+[chunking-strategies.md](chunking-strategies.md). Everything below describes the
+default cut and the machinery every strategy shares.
+
 ---
 
 ## 1. Where chunking runs
@@ -376,14 +384,23 @@ chunks were written.
 
 | Parameter | Default | Range | Where |
 |---|---|---|---|
+| `strategy` | `boundary` | the four in the registry | `IndexRequest`, per run |
 | `chunk_size` | `512` tokens | 64–8000 | `IndexRequest`, per run |
 | `chunk_overlap` | `64` tokens | 0–4000 | `IndexRequest`, per run |
-| `encoding_name` | `cl100k_base` | — | Not exposed; `chunker.DEFAULT_ENCODING` |
-| `BOUNDARY_SEARCH_FRACTION` | `0.25` | — | Not exposed; module constant |
+| `variant` | none — production | any variant id | `IndexRequest`, per run |
+| `encoding_name` | `cl100k_base` | — | Not exposed; `chunking.tokens.DEFAULT_ENCODING` |
+| `BOUNDARY_SEARCH_FRACTION` | `0.25` | — | Not exposed; `chunking.boundary` constant |
 
-Defaults live in `chunker` as `DEFAULT_CHUNK_SIZE` / `DEFAULT_CHUNK_OVERLAP` and
-are imported by `schemas/ingestion`, so the API's documented default and the
-splitter's default cannot drift apart.
+A named `variant` overrides the first three outright and decides where the
+vectors land; the precedence is settled in `chunk_variants.resolve` and nowhere
+else. See [chunking-strategies.md](chunking-strategies.md) §2.
+
+Defaults live in `services/chunking/tokens` as `DEFAULT_CHUNK_SIZE` /
+`DEFAULT_CHUNK_OVERLAP` and are imported by both `schemas/ingestion` and
+`schemas/chunking`, so the API's documented default and the splitter's default
+cannot drift apart. That module is a leaf — it imports nothing of ours — which
+is what lets a schema read a default from it without dragging the strategy
+registry into its own import.
 
 512 was chosen so a retrieved chunk is specific rather than a wall of text, while
 still being large enough to hold a whole argument. 64 is a couple of sentences —
@@ -519,9 +536,12 @@ Recorded because they are real, small, and easy to fix wrong.
   to mojibake and gets embedded.
 - **`Document`** (`schemas/document.py`) is not used by this path. Chunking goes
   straight from extracted text to `Chunk`; nothing constructs a `Document`.
-- **The chunker has no tests.** There is no test suite in the backend at all, and
-  the boundary-search arithmetic and cursor advancement are the two places most
-  likely to be broken silently by an edit.
+- **The boundary arithmetic is now pinned, but only by its output.** The
+  smoke suite asserts the report still cuts into eight chunks under `boundary`
+  and that no chunk exceeds the budget, which would catch a change to the
+  search fraction or the cursor advancement. It does not test `_find_boundary`
+  or the token cursor directly, so *why* a cut moved still has to be worked out
+  by hand.
 - **Chunk text is stored twice** — in the source file and in vector metadata. See
   [chunk-text-migration.md](chunk-text-migration.md) for the plan that moves it
   out of the vector store, which is also what would make hybrid keyword search
@@ -542,6 +562,9 @@ accepting the type, `sync_status` stops reporting it as unsupported, and the
 chunker needs no knowledge of it — it receives a string like every other file.
 
 Never branch on extension at a call site. If a format needs structure-aware
-cutting rather than the shared token split, that is a second chunker with its own
-module and its own justification, selected by the registry — not an `if` in
-`chunk_document`.
+cutting rather than the shared token split, that is a strategy: a module under
+`services/chunking`, a member on `ChunkStrategy` and a line in the registry —
+not an `if` in `chunk_document`. See
+[chunking-strategies.md](chunking-strategies.md) §5, which also covers the
+import-time check that stops a strategy being offered without an implementation
+behind it.

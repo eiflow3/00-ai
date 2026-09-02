@@ -89,6 +89,18 @@ class ChatRequest(BaseModel):
         description="Embedding model used to embed the query for retrieval",
     )
 
+    # Which chunking variant to answer from. This is the whole point of the
+    # comparison: hold the question, the model, the prompt and top_k still,
+    # change only where the chunks came from, and the difference in the answer
+    # is the difference the chunking made.
+    chunk_variant: str = Field(
+        default="",
+        description=(
+            "Chunking variant to retrieve from, e.g. 'recursive-512-64'. Empty "
+            "means the production index."
+        ),
+    )
+
 
 class ModelOption(BaseModel):
     """One provider/model pair this deployment offers.

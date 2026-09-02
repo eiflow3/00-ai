@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS run_files (
     job_id      TEXT NOT NULL,
     source_key  TEXT NOT NULL,
+    variant     TEXT NOT NULL DEFAULT '',
     state       TEXT NOT NULL,
     chunk_count INTEGER NOT NULL DEFAULT 0,
     reused      INTEGER NOT NULL DEFAULT 0,
@@ -69,7 +70,9 @@ CREATE TABLE IF NOT EXISTS run_files (
     started_at  REAL,
     finished_at REAL,
     error       TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (job_id, source_key)
+    -- The variant is part of the key: one run can embed the same file four
+    -- ways, and those are four rows, not one row overwritten three times.
+    PRIMARY KEY (job_id, source_key, variant)
 );
 
 CREATE TABLE IF NOT EXISTS run_events (
@@ -110,10 +113,63 @@ def _connect() -> sqlite3.Connection:
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.executescript(_SCHEMA)
+    _migrate_run_files(connection)
     connection.commit()
 
     _connection = connection
     return connection
+
+
+def _migrate_run_files(connection: sqlite3.Connection) -> None:
+    """Give an existing history table its variant column and wider key.
+
+    `CREATE TABLE IF NOT EXISTS` leaves a table written by an older version
+    exactly as it was, so a database from before variants existed keeps the
+    narrow primary key — under which a run embedding one file four ways
+    overwrites the same row three times and the history loses three quarters
+    of what it did. Rebuilt rather than altered because SQLite cannot widen a
+    primary key in place.
+
+    Args:
+        connection: The open history database.
+    """
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(run_files)")
+    }
+    if not columns or "variant" in columns:
+        return
+
+    connection.executescript(
+        """
+        ALTER TABLE run_files RENAME TO run_files_old;
+
+        CREATE TABLE run_files (
+            job_id      TEXT NOT NULL,
+            source_key  TEXT NOT NULL,
+            variant     TEXT NOT NULL DEFAULT '',
+            state       TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            reused      INTEGER NOT NULL DEFAULT 0,
+            pruned      INTEGER NOT NULL DEFAULT 0,
+            started_at  REAL,
+            finished_at REAL,
+            error       TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (job_id, source_key, variant)
+        );
+
+        INSERT INTO run_files
+            (job_id, source_key, variant, state, chunk_count, reused, pruned,
+             started_at, finished_at, error)
+        SELECT job_id, source_key, '', state, chunk_count, reused, pruned,
+               started_at, finished_at, error
+        FROM run_files_old;
+
+        DROP TABLE run_files_old;
+
+        CREATE INDEX IF NOT EXISTS run_files_key ON run_files (source_key);
+        """
+    )
+    logger.info("Run history migrated: run_files now records a variant per file.")
 
 
 def _write(statement: str, parameters: tuple = ()) -> None:
@@ -245,13 +301,20 @@ async def run_finished(
     )
 
 
-async def file_started(job_id: str, source_key: str) -> None:
-    """Record the worker picking a file up."""
+async def file_started(job_id: str, source_key: str, variant: str = "") -> None:
+    """Record the worker picking a file up.
+
+    Args:
+        job_id: The run.
+        source_key: The file.
+        variant: Which chunking variant it is being embedded for. Empty is
+            production.
+    """
     await asyncio.to_thread(
         _write,
         "INSERT OR REPLACE INTO run_files "
-        "(job_id, source_key, state, started_at) VALUES (?, ?, ?, ?)",
-        (job_id, source_key, STATE_RUNNING, time.time()),
+        "(job_id, source_key, variant, state, started_at) VALUES (?, ?, ?, ?, ?)",
+        (job_id, source_key, variant, STATE_RUNNING, time.time()),
     )
 
 
@@ -263,13 +326,25 @@ async def file_finished(
     reused: int = 0,
     pruned: int = 0,
     error: str = "",
+    variant: str = "",
 ) -> None:
     """Record one file's outcome, including embedding work that was skipped."""
     await asyncio.to_thread(
         _write,
         "UPDATE run_files SET state = ?, chunk_count = ?, reused = ?, pruned = ?, "
-        "finished_at = ?, error = ? WHERE job_id = ? AND source_key = ?",
-        (state, chunk_count, reused, pruned, time.time(), error, job_id, source_key),
+        "finished_at = ?, error = ? "
+        "WHERE job_id = ? AND source_key = ? AND variant = ?",
+        (
+            state,
+            chunk_count,
+            reused,
+            pruned,
+            time.time(),
+            error,
+            job_id,
+            source_key,
+            variant,
+        ),
     )
 
 

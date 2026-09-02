@@ -17,6 +17,12 @@ longer interleave their writes on one file — the situation the earlier
 claim-based design existed to prevent — but the in-flight marker is kept
 because it is what tells a client which row is actually being embedded.
 
+A queued entry is a file *and how to cut it*, not a file alone.  Embedding one
+document under four chunking strategies is four entries, and each has to carry
+its own configuration: a run whose geometry was fixed when it started would
+silently embed the last three the first one's way, and the comparison they
+exist for would be between four copies of the same thing.
+
 The state lives in memory, which is the right scope for a single process: it is
 only meaningful while the worker holding it is alive, and it must not survive a
 restart that killed that worker.  A second worker or instance would move this
@@ -25,7 +31,10 @@ to Redis; nothing else about the design changes.
 
 import asyncio
 import time
+from dataclasses import dataclass, field
 from typing import Optional
+
+from app.schemas.chunking import ChunkingConfig
 
 # How long an in-flight marker may stand before it is treated as abandoned.  A
 # worker killed without releasing its file would otherwise lock it out forever;
@@ -41,11 +50,28 @@ class QueueFull(RuntimeError):
     """
 
 
-# Files waiting their turn, in the order they were accepted.
-_pending: list[str] = []
+@dataclass(frozen=True)
+class QueuedFile:
+    """One file waiting to be embedded, and the terms it will be embedded on."""
 
-# The file being embedded right now, and when it was picked up.
-_in_flight: Optional[str] = None
+    source_key: str
+
+    # Which chunking variant this entry writes to. Empty is production.
+    variant: str = ""
+
+    # How to cut this file. Carried per entry rather than per run so four
+    # strategies can be queued at once and each is honoured.
+    config: ChunkingConfig = field(default_factory=ChunkingConfig)
+
+    # Re-embed even when the index already holds the chunk.
+    force: bool = False
+
+
+# Entries waiting their turn, in the order they were accepted.
+_pending: list[QueuedFile] = []
+
+# The entry being embedded right now, and when it was picked up.
+_in_flight: Optional[QueuedFile] = None
 _in_flight_at: float = 0.0
 
 # Guards both. Accepting a batch has to be atomic across the whole batch, or two
@@ -61,42 +87,67 @@ def _expired() -> bool:
     return time.monotonic() - _in_flight_at > CLAIM_TIMEOUT_SECONDS
 
 
-async def enqueue(keys: list[str], limit: int) -> tuple[list[str], list[str], list[str]]:
+async def enqueue(
+    keys: list[str],
+    limit: int,
+    variant: str = "",
+    config: Optional[ChunkingConfig] = None,
+    force: bool = False,
+) -> tuple[list[str], list[str], list[str]]:
     """Accept files onto the queue, up to the limit.
 
     Args:
         keys: The files a caller wants indexed, in the order given.
         limit: Most files that may be pending at once.
+        variant: Which chunking variant these files are being embedded for.
+        config: How to cut them.
+        force: Re-embed even what the index already holds.
 
     Returns:
         Three lists: the keys accepted, the keys already queued or in flight,
         and the keys refused because the queue is full.
     """
+    terms = config or ChunkingConfig()
+
     async with _lock:
         accepted: list[str] = []
         already: list[str] = []
         refused: list[str] = []
 
         for key in keys:
-            # Re-clicking Index on a file that is already waiting is a no-op,
-            # not a second entry — otherwise a queue fills with duplicates and
-            # the same file is embedded twice in a row.
-            if key in _pending or key == _in_flight:
+            # Re-clicking Index on a file that is already waiting *for the same
+            # variant* is a no-op, not a second entry — otherwise a queue fills
+            # with duplicates and the same file is embedded twice in a row. The
+            # same file for a different variant is different work, and queues.
+            if _waiting(key, variant):
                 already.append(key)
             elif len(_pending) >= limit:
                 refused.append(key)
             else:
-                _pending.append(key)
+                _pending.append(QueuedFile(key, variant, terms, force))
                 accepted.append(key)
 
         return accepted, already, refused
 
 
-async def dequeue() -> Optional[str]:
-    """Take the next file off the queue and mark it in flight.
+def _waiting(source_key: str, variant: str) -> bool:
+    """Whether this exact file-and-variant is already queued or in flight."""
+    if _in_flight is not None and (
+        _in_flight.source_key,
+        _in_flight.variant,
+    ) == (source_key, variant):
+        return True
+    return any(
+        (entry.source_key, entry.variant) == (source_key, variant)
+        for entry in _pending
+    )
+
+
+async def dequeue() -> Optional[QueuedFile]:
+    """Take the next entry off the queue and mark it in flight.
 
     Returns:
-        The next key, or None when the queue is empty.
+        The next entry, or None when the queue is empty.
     """
     global _in_flight, _in_flight_at
 
@@ -135,7 +186,7 @@ def clear() -> list[str]:
     """
     global _in_flight
 
-    dropped = list(_pending)
+    dropped = [entry.source_key for entry in _pending]
     _pending.clear()
     _in_flight = None
     return dropped
@@ -147,22 +198,32 @@ def is_indexing(source_key: str) -> bool:
     Synchronous so it can be called while building a status row, which happens
     per file and must not need the lock.
     """
-    return _in_flight == source_key and not _expired()
+    return (
+        _in_flight is not None
+        and _in_flight.source_key == source_key
+        and not _expired()
+    )
 
 
 def is_queued(source_key: str) -> bool:
-    """Whether this file is waiting its turn."""
-    return source_key in _pending
+    """Whether this file is waiting its turn, under any variant."""
+    return any(entry.source_key == source_key for entry in _pending)
 
 
 def pending() -> list[str]:
-    """Every file waiting, in queue order."""
-    return list(_pending)
+    """Every file waiting, in queue order.
+
+    Keys rather than entries, and a file queued under three variants appears
+    three times — which is what a client counting work still to do needs.
+    """
+    return [entry.source_key for entry in _pending]
 
 
 def in_flight() -> set[str]:
     """The file being embedded, as a set so callers can test membership."""
-    return set() if _in_flight is None or _expired() else {_in_flight}
+    if _in_flight is None or _expired():
+        return set()
+    return {_in_flight.source_key}
 
 
 def depth() -> int:

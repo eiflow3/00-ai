@@ -11,6 +11,7 @@ from app.config import settings
 from app.docs import register_openapi_components
 from app.schemas import EchoRequest, EchoResponse, HealthResponse
 from app.routers.chat import router as chat_router
+from app.routers.chunking import router as chunking_router
 from app.routers.evaluations import router as evaluations_router
 from app.routers.golden import router as golden_router
 from app.routers.prompts import router as prompts_router
@@ -66,6 +67,7 @@ app = FastAPI(title=settings.app_name, lifespan=lifespan)
 # Include routers for modular endpoint registration.
 app.include_router(chat_router)
 app.include_router(sources_router)
+app.include_router(chunking_router)
 app.include_router(traces_router)
 app.include_router(evaluations_router)
 app.include_router(prompts_router)

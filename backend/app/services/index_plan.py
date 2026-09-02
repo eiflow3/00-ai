@@ -33,7 +33,7 @@ from app.services.provenance import (
     parse_vector_id,
     vector_id_for,
 )
-from app.services.vector_store import fetch_vectors
+from app.services.vector_store import VectorSpace, fetch_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,7 @@ async def plan_for(
     chunks: list[Chunk],
     embedding_model: str,
     force: bool = False,
+    space: Optional[VectorSpace] = None,
 ) -> ChunkPlan:
     """Work out which chunks need embedding and which vectors are obsolete.
 
@@ -86,6 +87,9 @@ async def plan_for(
         embedding_model: The model this run will embed with.
         force: Re-embed every chunk regardless of what the index holds. The
             escape hatch for a suspect index, at full cost.
+        space: Which index and namespace this run writes to. Each chunking
+            variant has its own, so the comparison is against what *that*
+            variant already holds and never against another's.
 
     Returns:
         The positions to embed, the positions to reuse, and the vector ids to
@@ -94,7 +98,7 @@ async def plan_for(
     document_id = chunks[0].document_id if chunks else ""
     wanted = {chunk.chunk_index: chunk for chunk in chunks}
 
-    existing_ids = await list_vector_ids_for(source_key)
+    existing_ids = await list_vector_ids_for(source_key, space)
 
     # Nothing stored, or the caller insists: everything is outstanding.
     if force or not existing_ids:
@@ -109,7 +113,7 @@ async def plan_for(
     # runs on. It costs one request per hundred vectors, against one embedding
     # call per sixty-four chunks — so on any file with reusable chunks this is
     # the cheaper of the two, and on a file with none it is one wasted read.
-    records = await asyncio.to_thread(fetch_vectors, existing_ids)
+    records = await asyncio.to_thread(fetch_vectors, existing_ids, space)
 
     reuse: list[int] = []
     prune: list[str] = []

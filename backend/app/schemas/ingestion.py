@@ -16,8 +16,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.chunking import DEFAULT_STRATEGY, ChunkStrategy, ChunkingConfig
 from app.schemas.source import IndexState, SourceStatus
-from app.services.chunker import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
+from app.services.chunking.tokens import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
 from app.services.embeddings import DEFAULT_EMBEDDING_MODEL
 
 
@@ -69,11 +70,43 @@ class IndexRequest(BaseModel):
         description="Tokens repeated between consecutive chunks",
     )
 
+    # How the text is cut.
+    strategy: ChunkStrategy = Field(
+        default=DEFAULT_STRATEGY,
+        description="How to cut the document's text into chunks",
+    )
+
+    # Which chunking variant to write to. Empty writes to the index the app
+    # answers from; naming one writes into that experiment's own space
+    # instead, where it cannot affect a production answer.
+    variant: str = Field(
+        default="",
+        description=(
+            "Chunking variant to embed into, e.g. 'recursive-512-64'. Empty "
+            "means the production index. A variant's name fully determines "
+            "how it is cut, so `strategy`, `chunk_size` and `chunk_overlap` "
+            "are ignored when one is given."
+        ),
+    )
+
     # Model used to embed the chunks. Must match what queries will use.
     embedding_model: str = Field(
         default=DEFAULT_EMBEDDING_MODEL,
         description="Embedding model used to embed the chunks",
     )
+
+    @property
+    def chunking(self) -> ChunkingConfig:
+        """The configuration this request asks for, ignoring any variant.
+
+        A variant overrides this outright; see `services.chunk_variants.resolve`,
+        which is the one place that precedence is decided.
+        """
+        return ChunkingConfig(
+            strategy=self.strategy,
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+        )
 
 
 class IndexStartedEventData(BaseModel):

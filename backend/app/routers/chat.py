@@ -27,7 +27,8 @@ from app.schemas.chat import (
     TraceEventData,
 )
 from app.schemas.retrieval import RetrievalResult
-from app.services import chat_trace, prompt_store
+from app.services import chat_trace, chunk_variants, prompt_store
+from app.services.chunk_variants import UnknownVariant
 from app.services.cost_tracker import calculate_cost
 from app.services.llm import get_adapter
 from app.services.llm.catalog import DEFAULT_MODELS, list_models
@@ -107,6 +108,15 @@ async def chat(body: ChatRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # And settle which chunking answers, before the stream opens. Once it has,
+    # the status code is already sent and a bad variant could only be reported
+    # as an event — which retrieval would treat as best-effort and answer
+    # ungrounded, so a typo would read as a model that had lost its context.
+    try:
+        chunk_variants.space_for(body.chunk_variant)
+    except UnknownVariant as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Resolve the model — use the client's override or fall back to the default.
     model = body.model or DEFAULT_MODELS.get(body.provider, _FALLBACK_MODEL)
 
@@ -159,6 +169,7 @@ async def chat(body: ChatRequest):
                     score_threshold=body.score_threshold,
                     embedding_model=body.embedding_model,
                     timeline=timeline,
+                    variant=body.chunk_variant,
                 ))
                 async for event in timeline.follow(search):
                     yield _sse(ChatStreamStageEvent(data=event))
