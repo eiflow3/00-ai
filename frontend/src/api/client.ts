@@ -45,6 +45,8 @@ import type {
   ScoreEventWithCursor,
   ScoreRun,
   SourceDetail,
+  TableArtifact,
+  TableListResponse,
   SourceStatus,
   VariantDeleteResponse,
   VariantScoreRequest,
@@ -134,6 +136,22 @@ export function listSources(options: {
 /** Fetch one file's state together with every chunk indexed from it. */
 export function getSource(sourceKey: string, signal?: AbortSignal): Promise<SourceDetail> {
   return request<SourceDetail>(url(`/sources/${encodeKey(sourceKey)}`), { signal })
+}
+
+/** List every table stored for one document, in document order. */
+export function getTables(documentId: string, signal?: AbortSignal): Promise<TableListResponse> {
+  return request<TableListResponse>(url(`/artifacts/${documentId}/tables`), { signal })
+}
+
+/** Resolve one table:// link to the stored table. */
+export function getTable(
+  documentId: string,
+  tableId: string,
+  signal?: AbortSignal,
+): Promise<TableArtifact> {
+  return request<TableArtifact>(url(`/artifacts/${documentId}/tables/${tableId}`), {
+    signal,
+  })
 }
 
 /** Delete a file's vectors, leaving the file itself in object storage. */

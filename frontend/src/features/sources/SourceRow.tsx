@@ -10,6 +10,7 @@ import { StateBadge } from './StateBadge'
 import { needsReindex } from './state'
 import { ACCEPT_ATTRIBUTE } from './uploadRules'
 import { ChunkList } from './ChunkList'
+import { SourceTables } from './SourceTables'
 import { useRef } from 'react'
 import type { SourceStatus } from '../../api/types'
 import { RelativeTime } from '../../components/RelativeTime'
@@ -198,6 +199,8 @@ export function SourceRow({
                   </div>
                 </dl>
               ) : null}
+              {/* Tables extraction stored for this file, when there are any. */}
+              {indexed ? <SourceTables documentId={indexed.document_id} /> : null}
               <ChunkList sourceKey={status.source_key} />
             </div>
           </td>

@@ -140,6 +140,35 @@ export interface DeleteResponse {
   file_deleted: boolean
 }
 
+// --- Artifacts: stored by-products of extraction ------------------------------
+
+/** One table lifted out of a document at extraction time, stored verbatim. */
+export interface ExtractedTable {
+  /** Sequential within the document: "table-001", "table-002" … */
+  table_id: string
+  /** The table itself, as a markdown pipe table. */
+  markdown: string
+  /** Page holding the table, when the format knows pages. */
+  page?: number | null
+  /** The caption the document gave it, when one was found. */
+  caption?: string | null
+}
+
+/** Every table one document currently has stored. */
+export interface TableListResponse {
+  document_id: string
+  tables: ExtractedTable[]
+}
+
+/** One stored table, resolved from a table:// link. */
+export interface TableArtifact {
+  document_id: string
+  table_id: string
+  markdown: string
+  page?: number | null
+  caption?: string | null
+}
+
 // --- Index runs: enqueue, attach, stop --------------------------------------
 
 /** Request body for queueing files for embedding. */

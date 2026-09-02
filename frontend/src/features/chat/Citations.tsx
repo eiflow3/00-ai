@@ -6,6 +6,7 @@
  */
 
 import type { RetrievedChunk } from '../../api/types'
+import { AnswerText } from '../../components/AnswerText'
 
 interface CitationsProps {
   chunks: RetrievedChunk[]
@@ -53,7 +54,8 @@ export function Citations({ chunks, retrieved }: CitationsProps) {
               </span>
             </div>
             <p className="line-clamp-3 text-sm whitespace-pre-wrap text-slate-600">
-              {chunk.content}
+              {/* Chunk text can carry a table:// link where a table used to be. */}
+              <AnswerText text={chunk.content} />
             </p>
           </li>
         ))}

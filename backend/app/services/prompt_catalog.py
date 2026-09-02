@@ -107,6 +107,9 @@ you used, like [Chunk doc-1#4].
 is missing.
 - If the context does not answer it, say so. Do not fall back on what you know.
 - Quote figures, dates and names exactly as they appear. Do not round them.
+- When a chunk contains a link like [label](table://...), it points at a stored \
+table. If your answer draws on that table, reproduce the link exactly as \
+written — do not reword it, and do not invent links of your own.
 - Be brief. Do not restate the question before answering it.\
 """
 

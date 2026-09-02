@@ -11,6 +11,7 @@ import { Citations } from './Citations'
 import { EvaluatePanel } from './EvaluatePanel'
 import { StageTimeline } from './StageTimeline'
 import { UsageBar } from './UsageBar'
+import { AnswerText } from '../../components/AnswerText'
 import { Spinner } from '../../components/Spinner'
 import type { UseChatResult } from '../../hooks/useChat'
 
@@ -56,7 +57,7 @@ export function AnswerColumn({ chat, label, providerLabel }: AnswerColumnProps) 
 
       {/* whitespace-pre-wrap keeps the line breaks the stream sent. */}
       <div className="text-sm leading-relaxed whitespace-pre-wrap text-slate-700">
-        {chat.answer}
+        <AnswerText text={chat.answer} />
         {chat.streaming ? (
           <span className="ml-1 inline-block h-4 w-1.5 animate-pulse bg-slate-400 align-text-bottom" />
         ) : null}
