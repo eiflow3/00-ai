@@ -503,6 +503,18 @@ async def _process(job: _Job, entry: QueuedFile) -> None:
         )
         return
 
+    # Non-fatal trouble along the way — a table left undescribed, say. The
+    # file still indexed; each warning becomes an error event so a client
+    # watching the stream sees exactly what was degraded, and the run goes on.
+    for warning in result.warnings:
+        await job.emit(
+            IndexErrorEvent(
+                data=IndexErrorEventData(
+                    source_key=source_key, stage="describing_tables", message=warning
+                )
+            )
+        )
+
     job.indexed += 1
     job.total_chunks += result.chunk_count
     job.total_reused += result.reused

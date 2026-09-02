@@ -39,7 +39,7 @@ from app.schemas.chunk import Chunk
 from app.schemas.chunking import ChunkingConfig
 from app.schemas.extraction import ExtractionResult
 from app.schemas.source import SourceObject
-from app.services import derived_artifacts, index_catalog, index_plan
+from app.services import derived_artifacts, index_catalog, index_plan, table_describer
 from app.services.chunker import chunk_document
 from app.services.embeddings import embed_texts
 from app.services.object_store import get_object, head_object
@@ -187,10 +187,16 @@ async def index_source(
     yield "extracting", result
 
     # --- Describe tables ----------------------------------------------------
-    # A no-op for formats without tables, but always yielded so every run
-    # reports the same stages. The stored artifact is written after this
-    # stage, so what is persisted is what was chunked and embedded.
+    # Each table found is swapped for LLM prose ending in a link to the stored
+    # table artifact — a no-op for formats without tables, but always yielded
+    # so every run reports the same stages. Runs only on a fresh extraction: a
+    # reused one was described (and persisted) the first time. The artifact is
+    # written after the splice, so what is stored is what gets chunked.
     if persisted and freshly_extracted:
+        extraction, warnings = await table_describer.describe_tables(
+            extraction, source.key
+        )
+        result.warnings.extend(warnings)
         await derived_artifacts.save(source, extraction)
     yield "describing_tables", result
 

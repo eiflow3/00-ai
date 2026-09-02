@@ -10,6 +10,7 @@ from app import logging_config
 from app.config import settings
 from app.docs import register_openapi_components
 from app.schemas import EchoRequest, EchoResponse, HealthResponse
+from app.routers.artifacts import router as artifacts_router
 from app.routers.chat import router as chat_router
 from app.routers.chunking import router as chunking_router
 from app.routers.evaluations import router as evaluations_router
@@ -72,6 +73,7 @@ app.include_router(traces_router)
 app.include_router(evaluations_router)
 app.include_router(prompts_router)
 app.include_router(golden_router)
+app.include_router(artifacts_router)
 
 # Register schemas for streamed events, which FastAPI can't infer from routes.
 register_openapi_components(app)

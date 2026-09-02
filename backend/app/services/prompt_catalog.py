@@ -76,6 +76,25 @@ _QUERY = PromptVariable(
     example="What was revenue last year?",
 )
 
+_TABLE_MARKDOWN = PromptVariable(
+    name="table_markdown",
+    description="The extracted table, verbatim, as a markdown pipe table.",
+    required=True,
+    example="| Region | FY26 |\n| --- | --- |\n| APAC | 503.2 |",
+)
+
+_TABLE_CAPTION = PromptVariable(
+    name="caption",
+    description="The caption the document gave the table, or empty.",
+    example="Table 1: Revenue by region (USD millions)",
+)
+
+_TABLE_PAGE = PromptVariable(
+    name="page",
+    description="The page the table sits on, or empty when pages are unknown.",
+    example="2",
+)
+
 
 # --- Defaults ----------------------------------------------------------------
 
@@ -105,6 +124,26 @@ _CHUNK_FORMAT_DEFAULT = """\
 _NO_CONTEXT_DEFAULT = """\
 The search returned no context for this question. Say that the indexed \
 documents do not cover it, rather than answering from general knowledge.\
+"""
+
+# A table embeds badly as a grid of numbers — similarity search never finds it.
+# So the grid is stored as its own artifact and *this* prose stands in for it
+# in the index. Retrieval matches the prose; the link at the end of it is how
+# a reader gets back to the real table.
+_TABLE_DESCRIPTION_DEFAULT = """\
+You are indexing a document for retrieval. The table below has been stored \
+separately; write the prose that will stand in for it in the search index.
+
+Caption: {caption}
+Page: {page}
+
+The table, verbatim:
+{table_markdown}
+
+Write 2 to 4 sentences of plain prose describing what the table shows: what \
+its rows and columns are, the figures that stand out, and what a reader could \
+look up in it. Quote key figures exactly as written. Do not reproduce the \
+table, do not use markdown, and do not state anything the table does not.\
 """
 
 
@@ -356,6 +395,22 @@ PROMPTS: tuple[Prompt, ...] = (
         default_template=_NO_CONTEXT_DEFAULT,
         variables=[_QUERY],
         optional=True,
+    ),
+    Prompt(
+        id=PromptId.TABLE_DESCRIPTION,
+        label="Table description",
+        description=(
+            "Describes one extracted table in prose. The prose is what gets "
+            "embedded — the table itself is stored as an artifact the "
+            "description links to."
+        ),
+        applies_when=(
+            "Once per table found while indexing a document whose format "
+            "carries tables (a PDF)."
+        ),
+        template=_TABLE_DESCRIPTION_DEFAULT,
+        default_template=_TABLE_DESCRIPTION_DEFAULT,
+        variables=[_TABLE_MARKDOWN, _TABLE_CAPTION, _TABLE_PAGE],
     ),
     Prompt(
         id=PromptId.GOLDEN_SECTION,

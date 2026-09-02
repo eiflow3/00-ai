@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     # every entry is an embedding bill waiting to be paid.
     max_index_queue: int = 50
 
+    # Which LLM drafts the prose that stands in for an extracted table in the
+    # index. An empty model falls back to the provider's catalog default.
+    table_description_provider: str = "openai"
+    table_description_model: str = ""
+
     # --- Caching ------------------------------------------------------------
     # The /sources reads join object storage against the vector index, and the
     # index side is the expensive half: finding orphans means walking every

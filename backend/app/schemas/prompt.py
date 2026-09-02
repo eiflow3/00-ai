@@ -52,6 +52,9 @@ class PromptId(str, Enum):
     # Renders one retrieved chunk inside that block.
     CHUNK_FORMAT = "chunk_format"
 
+    # Describes one extracted table in prose, for embedding in its place.
+    TABLE_DESCRIPTION = "table_description"
+
     # Used instead of the context block when retrieval came back empty.
     NO_CONTEXT = "no_context"
 
