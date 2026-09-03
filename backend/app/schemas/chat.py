@@ -4,6 +4,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.governance import (
+    GovernanceFindingSummary,
+    GovernanceMode,
+)
 from app.schemas.retrieval import RetrievedChunk
 from app.services.cost_tracker import CostBreakdown
 from app.services.embeddings import DEFAULT_EMBEDDING_MODEL
@@ -98,6 +102,19 @@ class ChatRequest(BaseModel):
         description=(
             "Chunking variant to retrieve from, e.g. 'recursive-512-64'. Empty "
             "means the production index."
+        ),
+    )
+
+    # Governance mode override for this request. None runs under the server's
+    # configured default. Mode is the only governance field a request may
+    # touch — the verbatim (audit capture) knob is config-only by design.
+    governance_mode: Optional[GovernanceMode] = Field(
+        default=None,
+        description=(
+            "Override the governance mode for this request: 'off', "
+            "'audit_only' or 'enforce'. Omit to use the server default. "
+            "Under 'enforce' the answer is screened before it is sent, so "
+            "text arrives at the end rather than streaming token by token."
         ),
     )
 
@@ -268,6 +285,80 @@ class ChatStreamErrorEvent(BaseModel):
 
     event: Literal["error"] = Field(default="error", description="The SSE event name")
     data: ErrorEventData = Field(..., description="Which stage failed, and why")
+
+
+class GovernanceEventData(BaseModel):
+    """Payload of the `governance` SSE event.
+
+    Reports what one governance run found and did, as counts per entity type
+    and class — never the matched values themselves, which must not travel
+    over the wire they were just redacted from.
+    """
+
+    # Where in the request the screening ran.
+    point: Literal["inbound", "outbound"] = Field(
+        ..., description="Whether the question or the answer was screened"
+    )
+
+    # The mode this run actually ran under, after request/default resolution.
+    mode: GovernanceMode = Field(..., description="Mode the screening ran under")
+
+    # False when mode was 'off' — the content passed through unscreened.
+    screened: bool = Field(..., description="Whether screening actually ran")
+
+    # 'blocked' when policy rejected the content outright.
+    verdict: Literal["allowed", "blocked"] = Field(
+        default="allowed", description="Whether the content was allowed through"
+    )
+
+    # What was found, grouped: entity type, classification, action, count.
+    findings: list[GovernanceFindingSummary] = Field(
+        default_factory=list, description="Counts of what was found and done"
+    )
+
+
+class ChatStreamGovernanceEvent(BaseModel):
+    """Reports one governance screening in the SSE stream.
+
+    Sent with the event name 'governance' — after the question is screened,
+    and again after the answer is.
+    """
+
+    event: Literal["governance"] = Field(
+        default="governance", description="The SSE event name"
+    )
+    data: GovernanceEventData = Field(..., description="What was found and done")
+
+
+class BlockedEventData(BaseModel):
+    """Payload of the `blocked` SSE event.
+
+    Unlike `error` — a stage that broke while the stream survives — this is a
+    stage that *worked*: policy examined the content and refused it. The
+    stream ends after this event, and no answer text follows.
+    """
+
+    # Where the block happened.
+    point: Literal["inbound", "outbound"] = Field(
+        ..., description="Whether the question or the answer was blocked"
+    )
+
+    # Why, written for a person. Carries no detected values.
+    message: str = Field(..., description="Why the content was refused")
+
+    # What triggered the block, as counts.
+    findings: list[GovernanceFindingSummary] = Field(
+        default_factory=list, description="Counts of what triggered the block"
+    )
+
+
+class ChatStreamBlockedEvent(BaseModel):
+    """Reports the request being refused by governance policy. Terminal."""
+
+    event: Literal["blocked"] = Field(
+        default="blocked", description="The SSE event name"
+    )
+    data: BlockedEventData = Field(..., description="Where and why it was refused")
 
 
 class ChatStreamUsageEvent(BaseModel):

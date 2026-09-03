@@ -37,11 +37,17 @@ from typing import AsyncIterator, Optional
 
 from app.schemas.chunk import Chunk
 from app.schemas.chunking import ChunkingConfig
-from app.schemas.extraction import ExtractionResult
+from app.schemas.extraction import ExtractionResult, PageSpan
+from app.schemas.governance import GovernanceFindingSummary, GovernancePolicy, SpanEdit
 from app.schemas.source import SourceObject
 from app.services import derived_artifacts, index_catalog, index_plan, table_describer
 from app.services.chunker import chunk_document
 from app.services.embeddings import embed_texts
+from app.services.governance import audit as governance_audit
+from app.services.governance import policy as governance_policy
+from app.services.governance import runner as governance_runner
+from app.services.governance.pii.actions import offset_after_edits
+from app.services.governance.runner import GovernanceBlocked
 from app.services.object_store import get_object, head_object
 from app.services.provenance import build_metadata, vector_id_for
 from app.services.text_extraction import extract_document, requires_derived_artifact
@@ -77,6 +83,13 @@ class IngestionResult:
         # not be drafted, for instance. Reported as error events, never as a
         # failed run.
         self.warnings: list[str] = []
+        # What the governance screening found and did, filled in when the
+        # screening stage runs. None until then, so a consumer can tell
+        # "not screened yet" from "screened, nothing found".
+        self.governance: Optional[list[GovernanceFindingSummary]] = None
+        self.governance_mode = ""
+        self.screened = False
+        self.governance_verdict = "allowed"
 
 
 async def _embed_in_batches(texts: list[str], model: str) -> list[list[float]]:
@@ -147,6 +160,7 @@ async def index_source(
     embedding_model: str,
     force: bool = False,
     space: Optional[VectorSpace] = None,
+    governance: Optional[GovernancePolicy] = None,
 ) -> AsyncIterator[tuple[str, IngestionResult]]:
     """Embed one source file, yielding after each stage completes.
 
@@ -158,14 +172,20 @@ async def index_source(
         space: Where the vectors go. Defaults to production; a chunking
             experiment passes its own namespace so it cannot overwrite the
             vectors the app answers from.
+        governance: Policy the screening stage runs under. None means the
+            deployment's configured default.
 
     Yields:
         The name of each stage as it finishes, with the running result.
 
     Raises:
         UnsupportedSourceType: If no extractor handles this file type.
+        GovernanceBlocked: If policy refused the file. Nothing was chunked
+            or embedded; the "screening" stage was yielded first, carrying
+            what triggered the refusal.
     """
     result = IngestionResult(source.key)
+    policy = governance or governance_policy.default_policy()
 
     # --- Load -------------------------------------------------------------
     data = await get_object(source.key)
@@ -203,13 +223,34 @@ async def index_source(
         await derived_artifacts.save(source, extraction)
     yield "describing_tables", result
 
+    # --- Screen -------------------------------------------------------------
+    # Between extraction and chunking, so anything the policy redacts never
+    # reaches the index at all. The derived artifact saved above keeps the
+    # raw extraction — screening governs what gets embedded, and a policy
+    # change later re-screens from that record instead of re-extracting.
+    screening = await governance_runner.run(extraction.text, policy)
+    result.governance = governance_audit.summarize(screening.findings, policy)
+    result.governance_mode = policy.mode.value
+    result.screened = screening.screened
+    result.governance_verdict = screening.verdict
+    yield "screening", result
+
+    if screening.verdict == "blocked":
+        # Refused outright: nothing of this file may be chunked or embedded.
+        raise GovernanceBlocked(
+            f"{source.key}: refused by governance policy"
+        )
+
+    text = screening.output_text
+    pages = _pages_after_edits(extraction.pages, screening.edits)
+
     # --- Chunk ------------------------------------------------------------
     chunks = await chunk_document(
         source.key,
-        extraction.text,
+        text,
         config,
         embedding_model=embedding_model,
-        pages=extraction.pages or None,
+        pages=pages or None,
     )
     result.chunk_count = len(chunks)
     yield "chunking", result
@@ -272,6 +313,27 @@ async def index_source(
         result.pruned,
     )
     yield "upserting", result
+
+
+def _pages_after_edits(
+    pages: list[PageSpan], edits: list[SpanEdit]
+) -> list[PageSpan]:
+    """Page spans shifted to match the screened text.
+
+    A redaction changes the text's length, so every offset after it moves.
+    Without this, one masked email on page 1 would mis-attribute every
+    chunk on every later page.
+    """
+    if not pages or not edits:
+        return pages
+    return [
+        PageSpan(
+            page=span.page,
+            start_offset=offset_after_edits(edits, span.start_offset),
+            end_offset=offset_after_edits(edits, span.end_offset),
+        )
+        for span in pages
+    ]
 
 
 async def resolve_source(source_key: str) -> Optional[SourceObject]:

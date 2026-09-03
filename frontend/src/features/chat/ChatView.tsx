@@ -20,8 +20,9 @@ import { AnswerColumn } from './AnswerColumn'
 import { ModelPicker } from './ModelPicker'
 import { VariantPicker } from './VariantPicker'
 import { productionLabel } from './answering'
-import type { ModelOption } from '../../api/types'
+import type { GovernanceMode, ModelOption } from '../../api/types'
 import { EmptyState } from '../../components/EmptyState'
+import { GovernancePicker } from '../../components/GovernancePicker'
 import { useChat } from '../../hooks/useChat'
 import { useModels } from '../../hooks/useModels'
 import { useProduction } from '../../hooks/useProduction'
@@ -43,6 +44,8 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
   // stored, so pressing Ask on a variant lands without an effect writing state.
   const [pickedVariant, setPickedVariant] = useState<string | null>(null)
   const [secondary, setSecondary] = useState<string | null>(null)
+  // '' sends nothing, so the server's configured default applies.
+  const [governanceMode, setGovernanceMode] = useState<GovernanceMode | ''>('')
 
   const primary = pickedVariant ?? initialVariant
 
@@ -72,7 +75,11 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
 
-    const options = model ? { provider: model.provider, model: model.model } : {}
+    const options = {
+      ...(model ? { provider: model.provider, model: model.model } : {}),
+      // Sent only when a mode was actually picked; '' means the default.
+      ...(governanceMode !== '' ? { governance_mode: governanceMode } : {}),
+    }
 
     void left.ask(draft, { ...options, chunk_variant: primary })
     if (secondary !== null) {
@@ -107,6 +114,14 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
         onPrimary={setPickedVariant}
         onSecondary={setSecondary}
       />
+
+      <div className="mb-4">
+        <GovernancePicker
+          value={governanceMode}
+          onChange={setGovernanceMode}
+          disabled={streaming}
+        />
+      </div>
 
       {models.error ? (
         <p className="mb-4 text-xs text-state-stale">

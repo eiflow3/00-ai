@@ -9,7 +9,14 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { streamChat } from '../api/client'
-import type { ChatRequest, RetrievedChunk, StageEventData, UsageEventData } from '../api/types'
+import type {
+  BlockedEventData,
+  ChatRequest,
+  GovernanceEventData,
+  RetrievedChunk,
+  StageEventData,
+  UsageEventData,
+} from '../api/types'
 
 export interface UseChatResult {
   /** The question the current answer belongs to. */
@@ -37,6 +44,16 @@ export interface UseChatResult {
   streaming: boolean
   /** True once retrieval has reported, so an empty citation list is meaningful. */
   retrieved: boolean
+  /**
+   * What governance found — one entry after the question is screened, a
+   * second after the answer is. Counts only; never the matched values.
+   */
+  governance: GovernanceEventData[]
+  /**
+   * Policy refused the question or the answer. A verdict, not a failure:
+   * the stream ended cleanly with no answer text.
+   */
+  blocked: BlockedEventData | null
   /** A degraded stage — the answer still streams, just ungrounded. */
   warning: string | null
   /** The provider refused or failed, so there is no answer at all. */
@@ -52,7 +69,7 @@ export interface UseChatResult {
    */
   ask: (
     query: string,
-    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant'>,
+    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant' | 'governance_mode'>,
   ) => Promise<void>
   cancel: () => void
 }
@@ -64,6 +81,8 @@ export function useChat(): UseChatResult {
   const [stages, setStages] = useState<StageEventData[]>([])
   const [answer, setAnswer] = useState('')
   const [usage, setUsage] = useState<UsageEventData | null>(null)
+  const [governance, setGovernance] = useState<GovernanceEventData[]>([])
+  const [blocked, setBlocked] = useState<BlockedEventData | null>(null)
   const [streaming, setStreaming] = useState(false)
   const [retrieved, setRetrieved] = useState(false)
   const [warning, setWarning] = useState<string | null>(null)
@@ -74,7 +93,7 @@ export function useChat(): UseChatResult {
 
   const ask = useCallback(async (
     query: string,
-    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant'>,
+    options?: Pick<ChatRequest, 'provider' | 'model' | 'chunk_variant' | 'governance_mode'>,
   ) => {
     const trimmed = query.trim()
     if (!trimmed) return
@@ -90,6 +109,8 @@ export function useChat(): UseChatResult {
     setStages([])
     setAnswer('')
     setUsage(null)
+    setGovernance([])
+    setBlocked(null)
     setRetrieved(false)
     setWarning(null)
     setFailure(null)
@@ -118,6 +139,17 @@ export function useChat(): UseChatResult {
             })
             break
           }
+
+          case 'governance':
+            // Two arrive per request: the question's screening, then the
+            // answer's. Appended in order so the report renders both.
+            setGovernance((current) => [...current, event.data])
+            break
+
+          case 'blocked':
+            // Terminal: policy refused the content, and nothing follows.
+            setBlocked(event.data)
+            break
 
           case 'retrieval':
             setCitations(event.data.chunks)
@@ -167,6 +199,8 @@ export function useChat(): UseChatResult {
     stages,
     answer,
     usage,
+    governance,
+    blocked,
     streaming,
     retrieved,
     warning,

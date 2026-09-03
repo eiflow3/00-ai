@@ -9,6 +9,7 @@
 
 import { Citations } from './Citations'
 import { EvaluatePanel } from './EvaluatePanel'
+import { GovernanceReport } from './GovernanceReport'
 import { StageTimeline } from './StageTimeline'
 import { UsageBar } from './UsageBar'
 import { AnswerText } from '../../components/AnswerText'
@@ -52,6 +53,9 @@ export function AnswerColumn({ chat, label, providerLabel }: AnswerColumnProps) 
 
       {/* Above the citations because it starts filling in before they exist. */}
       <StageTimeline stages={chat.stages} />
+
+      {/* A refusal or an unscreened run must not be scrolled past unnoticed. */}
+      <GovernanceReport governance={chat.governance} blocked={chat.blocked} />
 
       <Citations chunks={chat.citations} retrieved={chat.retrieved} />
 

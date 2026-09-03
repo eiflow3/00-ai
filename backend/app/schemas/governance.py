@@ -121,6 +121,47 @@ class GovernancePolicy(BaseModel):
         return frozenset({"mode"})
 
 
+class GovernanceFindingSummary(BaseModel):
+    """One line of what a governance run found — counts only, never values.
+
+    This is the shape that crosses a wire (SSE events, run history): entity
+    type, class, what was done, and how many. The raw matched text never
+    appears here — echoing it back would re-leak what was just redacted.
+    """
+
+    entity_type: EntityType = Field(..., description="What kind of entity matched")
+    classification: Optional[PiiClass] = Field(
+        default=None, description="Whose data it was judged to be"
+    )
+    action: GovernanceAction = Field(..., description="What was done about it")
+    count: int = Field(..., ge=1, description="How many findings this line covers")
+
+
+class GovernancePolicyView(BaseModel):
+    """The resolved global policy, as GET /governance/policy reports it.
+
+    What a client reads to render its defaults — which mode requests run
+    under when they send nothing, and which fields a request may override.
+    """
+
+    mode: GovernanceMode = Field(..., description="Default mode for every run")
+    verbatim: VerbatimMode = Field(
+        ..., description="How much of a matched value audit records hold"
+    )
+    own_domains: list[str] = Field(
+        default_factory=list, description="Domains classified as business"
+    )
+    actions: dict[PiiClass, GovernanceAction] = Field(
+        default_factory=dict, description="What enforce does per classification"
+    )
+    request_overridable: list[str] = Field(
+        default_factory=list, description="Policy fields a request body may override"
+    )
+    stages: list[str] = Field(
+        default_factory=list, description="Governance stages this deployment runs"
+    )
+
+
 class StageOutcome(BaseModel):
     """One stage's entry in the run timeline — mirrors the chat `stage`
     event, so a skipped governance stage is still visible to a client."""
@@ -134,10 +175,27 @@ class StageOutcome(BaseModel):
     )
 
 
+class SpanEdit(BaseModel):
+    """One replacement enforce made: which span, and how long it is now.
+
+    Carried so a caller that tracks offsets into the text (page spans, most
+    importantly) can shift them instead of silently mis-attributing every
+    page after the first redaction.
+    """
+
+    start: int = Field(..., ge=0, description="Start offset in the original text")
+    end: int = Field(..., ge=0, description="End offset in the original text")
+    new_length: int = Field(..., ge=0, description="Length of the replacement")
+
+
 class GovernanceResult(BaseModel):
     """What a governance run hands back to the pipeline that called it."""
 
     output_text: str = Field(..., description="The text the pipeline continues with")
+    edits: list[SpanEdit] = Field(
+        default_factory=list,
+        description="Replacements applied to the text, in offset order",
+    )
     findings: list[Finding] = Field(
         default_factory=list, description="Everything detected, classified"
     )

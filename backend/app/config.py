@@ -80,6 +80,23 @@ class Settings(BaseSettings):
     table_description_provider: str = "openai"
     table_description_model: str = ""
 
+    # --- Governance -----------------------------------------------------------
+    # Plain strings rather than the schema enums, because config sits below
+    # schemas in the layering; services/governance/policy.py parses them.
+
+    # Default mode for every governance run: "off", "audit_only" or "enforce".
+    # A request may override this per call; enforce is the fail-safe default.
+    governance_mode: str = "enforce"
+
+    # How much of a matched value audit records may hold: "off", "preview" or
+    # "full". Deliberately NOT request-overridable — raw-value capture is an
+    # operator decision, so it lives only here.
+    governance_verbatim: str = "preview"
+
+    # Domains whose email addresses classify as business rather than personal
+    # or ambiguous — the operator's own organisation, typically.
+    governance_own_domains: list[str] = []
+
     # --- Caching ------------------------------------------------------------
     # The /sources reads join object storage against the vector index, and the
     # index side is the expensive half: finding orphans means walking every

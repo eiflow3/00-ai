@@ -195,6 +195,70 @@ export interface TableArtifact {
   caption?: string | null
 }
 
+// --- Governance: what content is screened under ------------------------------
+
+/**
+ * The three-valued governance knob.
+ *
+ * `off` pays no detection cost and stamps the run unscreened; `audit_only`
+ * records findings without touching a byte; `enforce` acts on them.
+ */
+export type GovernanceMode = 'off' | 'audit_only' | 'enforce'
+
+/**
+ * One line of what a screening found — counts only, never the matched values.
+ * The raw text never travels on any stream; that is the feature's contract.
+ */
+export interface GovernanceFindingSummary {
+  entity_type: string
+  classification: string | null
+  action: string
+  count: number
+}
+
+/** What one governance screening found and did. */
+export interface GovernanceEventData {
+  /** Whether the question (`inbound`) or the answer (`outbound`) was screened. */
+  point: 'inbound' | 'outbound'
+  mode: GovernanceMode
+  /** False when mode was `off` — the content passed through unscreened. */
+  screened: boolean
+  verdict: 'allowed' | 'blocked'
+  findings: GovernanceFindingSummary[]
+}
+
+/**
+ * Governance policy refused the content. A verdict, not an error: the stage
+ * worked, examined the content, and said no. Terminal — nothing follows it.
+ */
+export interface BlockedEventData {
+  point: 'inbound' | 'outbound'
+  message: string
+  findings: GovernanceFindingSummary[]
+}
+
+/** The resolved global policy, from GET /governance/policy. */
+export interface GovernancePolicyView {
+  mode: GovernanceMode
+  verbatim: 'off' | 'preview' | 'full'
+  own_domains: string[]
+  actions: Record<string, string>
+  /** Policy fields a request body may override — `mode`, today. */
+  request_overridable: string[]
+  stages: string[]
+}
+
+/** What the screening stage found in one file during an indexing run. */
+export interface IndexGovernanceEventData {
+  source_key: string
+  mode: GovernanceMode
+  /** False means the run's mode was `off` and the file was indexed raw. */
+  screened: boolean
+  /** `blocked` means nothing of the file was chunked or embedded. */
+  verdict: 'allowed' | 'blocked'
+  findings: GovernanceFindingSummary[]
+}
+
 // --- Index runs: enqueue, attach, stop --------------------------------------
 
 /** Request body for queueing files for embedding. */
@@ -216,6 +280,12 @@ export interface IndexRequest {
    * when one is given.
    */
   variant?: string
+  /**
+   * Governance mode override for this run. Omitted, the server default
+   * applies; `off` indexes content exactly as extracted, with the run
+   * stamped unscreened so that choice stays visible later.
+   */
+  governance_mode?: GovernanceMode
 }
 
 /** Where a run stands. Every state but `running` is terminal. */
@@ -274,6 +344,7 @@ export type IndexStage =
   | 'loading'
   | 'extracting'
   | 'describing_tables'
+  | 'screening'
   | 'chunking'
   | 'embedding'
   | 'upserting'
@@ -339,6 +410,7 @@ export type IndexEvent =
   | { event: 'started'; data: IndexStartedEventData }
   | { event: 'queued'; data: IndexQueuedEventData }
   | { event: 'progress'; data: IndexProgressEventData }
+  | { event: 'governance'; data: IndexGovernanceEventData }
   | { event: 'completed'; data: IndexCompletedEventData }
   | { event: 'error'; data: IndexErrorEventData }
   | { event: 'summary'; data: IndexSummaryEventData }
@@ -453,6 +525,12 @@ export interface ChatRequest {
    * answer is the difference the chunking made.
    */
   chunk_variant?: string
+  /**
+   * Governance mode override for this request. Omitted, the server default
+   * applies. Under `enforce` the answer is screened whole before it is sent,
+   * so text arrives at the end rather than streaming token by token.
+   */
+  governance_mode?: GovernanceMode
 }
 
 /**
@@ -471,6 +549,8 @@ export type ChatEvent =
   | { event: 'trace'; data: TraceEventData }
   | { event: 'message'; data: string }
   | { event: 'stage'; data: StageEventData }
+  | { event: 'governance'; data: GovernanceEventData }
+  | { event: 'blocked'; data: BlockedEventData }
   | { event: 'retrieval'; data: RetrievalEventData }
   | { event: 'error'; data: ChatErrorEventData }
   | { event: 'usage'; data: UsageEventData }

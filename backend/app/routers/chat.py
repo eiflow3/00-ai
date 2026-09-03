@@ -15,21 +15,34 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.docs.chat import CHAT_DESCRIPTION, CHAT_MODELS_DESCRIPTION, CHAT_RESPONSES
 from app.schemas.chat import (
+    BlockedEventData,
     ChatRequest,
     ModelOption,
+    ChatStreamBlockedEvent,
     ChatStreamErrorEvent,
+    ChatStreamGovernanceEvent,
     ChatStreamRetrievalEvent,
     ChatStreamStageEvent,
     ChatStreamTraceEvent,
     ChatStreamUsageEvent,
     ErrorEventData,
+    GovernanceEventData,
     RetrievalEventData,
     TraceEventData,
+)
+from app.schemas.governance import (
+    GovernanceMode,
+    GovernancePolicy,
+    GovernanceResult,
 )
 from app.schemas.retrieval import RetrievalResult
 from app.services import chat_trace, chunk_variants, prompt_store
 from app.services.chunk_variants import UnknownVariant
 from app.services.cost_tracker import calculate_cost
+from app.services.governance import audit as governance_audit
+from app.services.governance import policy as governance_policy
+from app.services.governance import runner as governance_runner
+from app.services.governance.runner import GovernanceStageFailure
 from app.services.llm import get_adapter
 from app.services.llm.catalog import DEFAULT_MODELS, list_models
 from app.services.pipeline_timeline import Timeline
@@ -47,6 +60,8 @@ def _sse(
     | ChatStreamRetrievalEvent
     | ChatStreamStageEvent
     | ChatStreamErrorEvent
+    | ChatStreamGovernanceEvent
+    | ChatStreamBlockedEvent
     | ChatStreamUsageEvent,
 ) -> dict:
     """Serialise a typed stream event into the dict sse-starlette expects.
@@ -63,6 +78,15 @@ def _sse(
         else json.dumps(payload.to_dict())
     )
     return {"event": event.event, "data": data}
+
+
+def _governance_note(result: GovernanceResult) -> str:
+    """The one-line detail a governance stage shows on the timeline."""
+    if not result.screened:
+        return "skipped — governance is off"
+    if not result.findings:
+        return "no findings"
+    return f"{len(result.findings)} finding(s) · {result.verdict}"
 
 
 @router.get(
@@ -131,6 +155,18 @@ async def chat(body: ChatRequest):
     # same thing, and only the first can be judged later.
     system_prompt = resolve_system_prompt(body.system_prompt, prompts)
 
+    # The governance policy this request runs under: the configured default,
+    # with the one field a request may override (its mode) layered on top.
+    # Resolved before the stream opens, like everything else that can refuse.
+    policy = governance_policy.resolve(
+        default=governance_policy.default_policy(),
+        request=(
+            GovernancePolicy(mode=body.governance_mode)
+            if body.governance_mode is not None
+            else None
+        ),
+    )
+
     async def event_generator() -> AsyncIterator[dict]:
         """Yield the trace id, each stage as it runs, the deltas, then the usage."""
         # Recording starts before anything can fail, so a request that dies
@@ -147,13 +183,62 @@ async def chat(body: ChatRequest):
         yield _sse(ChatStreamTraceEvent(data=TraceEventData(trace_id=recorder.trace_id)))
 
         try:
+            # --- Governance: the question -------------------------------------
+            # Screened before retrieval, so nothing the policy would redact is
+            # embedded, searched for, or sent to a provider. Everything after
+            # this point uses `query`, never `body.query`.
+            query = body.query
+            try:
+                async with timeline.stage(
+                    "governance_inbound", "Screening the question"
+                ) as stage:
+                    inbound = await governance_runner.run(body.query, policy)
+                    stage.note(_governance_note(inbound))
+            except GovernanceStageFailure as exc:
+                # Fail closed: enforce could not screen, so nothing may proceed.
+                for event in timeline.drain():
+                    yield _sse(ChatStreamStageEvent(data=event))
+                recorder.record_error("governance_inbound", str(exc))
+                yield _sse(ChatStreamErrorEvent(
+                    data=ErrorEventData(stage="governance_inbound", message=str(exc))
+                ))
+                return
+            for event in timeline.drain():
+                yield _sse(ChatStreamStageEvent(data=event))
+
+            inbound_findings = governance_audit.summarize(inbound.findings, policy)
+            yield _sse(ChatStreamGovernanceEvent(data=GovernanceEventData(
+                point="inbound",
+                mode=policy.mode,
+                screened=inbound.screened,
+                verdict=inbound.verdict,
+                findings=inbound_findings,
+            )))
+
+            if inbound.verdict == "blocked":
+                # Not an error — policy examined the question and refused it.
+                recorder.record_error(
+                    "governance_inbound", "Blocked by governance policy."
+                )
+                yield _sse(ChatStreamBlockedEvent(data=BlockedEventData(
+                    point="inbound",
+                    message=(
+                        "The question contains content this deployment's "
+                        "governance policy refuses to process."
+                    ),
+                    findings=inbound_findings,
+                )))
+                return
+
+            query = inbound.output_text
+
             # --- Retrieval phase --------------------------------------------
             # Client-supplied chunks win, so a caller that already ran retrieval
             # (or is replaying a conversation) isn't charged for it twice.
             if body.context_chunks:
                 async with timeline.stage("context", "Using the supplied context") as stage:
                     result = RetrievalResult(
-                        query=body.query,
+                        query=query,
                         chunks=body.context_chunks,
                         total_searched=len(body.context_chunks),
                     )
@@ -164,7 +249,7 @@ async def chat(body: ChatRequest):
                 # Run as a task so its stages reach the client while it is still
                 # working, rather than all at once when it returns.
                 search = asyncio.ensure_future(retrieve(
-                    body.query,
+                    query,
                     top_k=body.top_k,
                     score_threshold=body.score_threshold,
                     embedding_model=body.embedding_model,
@@ -185,9 +270,9 @@ async def chat(body: ChatRequest):
                     yield _sse(ChatStreamErrorEvent(
                         data=ErrorEventData(stage="retrieval", message=str(exc))
                     ))
-                    result = RetrievalResult(query=body.query)
+                    result = RetrievalResult(query=query)
             else:
-                result = RetrievalResult(query=body.query)
+                result = RetrievalResult(query=query)
 
             # Captured before the answer exists: this is the evidence a later
             # evaluation is judged against, and the index may change meanwhile.
@@ -205,7 +290,7 @@ async def chat(body: ChatRequest):
             # --- Generation phase --------------------------------------------
             async with timeline.stage("prompt", "Building the prompt") as stage:
                 messages = build_messages(
-                    query=body.query,
+                    query=query,
                     chunks=result.chunks,
                     system_prompt=system_prompt,
                     # False only when the caller asked for an ungrounded answer:
@@ -223,6 +308,12 @@ async def chat(body: ChatRequest):
             # an HTTP error — it has to be an event, or the connection just dies
             # mid-answer with nothing explaining why.
             generation_error = ""
+            # Under enforce the answer is held back and screened whole before
+            # anything reaches the client — a masked token stream would leak
+            # the value across delta boundaries. Under audit_only and off the
+            # deltas stream live, exactly as before.
+            hold_answer = policy.mode is GovernanceMode.ENFORCE
+            answer_parts: list[str] = []
             async with timeline.stage("generation", "Generating the answer") as stage:
                 # The stage has to be announced before the first token, or the
                 # slowest step of the request is the one with nothing on screen.
@@ -239,6 +330,9 @@ async def chat(body: ChatRequest):
                             first_token_ms = stage.elapsed_ms
                         deltas += 1
                         recorder.append_answer(token)
+                        answer_parts.append(token)
+                        if hold_answer:
+                            continue
                         # Each yield sends a "data: <token>\n\n" SSE event to the client.
                         yield {"data": token}
                 except Exception as exc:
@@ -262,6 +356,54 @@ async def chat(body: ChatRequest):
                     data=ErrorEventData(stage="generation", message=generation_error)
                 ))
                 return
+
+            # --- Governance: the answer ---------------------------------------
+            answer_text = "".join(answer_parts)
+            try:
+                async with timeline.stage(
+                    "governance_outbound", "Screening the answer"
+                ) as stage:
+                    outbound = await governance_runner.run(answer_text, policy)
+                    stage.note(_governance_note(outbound))
+            except GovernanceStageFailure as exc:
+                # Fail closed: the held-back answer must not go out unscreened.
+                for event in timeline.drain():
+                    yield _sse(ChatStreamStageEvent(data=event))
+                recorder.record_error("governance_outbound", str(exc))
+                yield _sse(ChatStreamErrorEvent(
+                    data=ErrorEventData(stage="governance_outbound", message=str(exc))
+                ))
+                return
+            for event in timeline.drain():
+                yield _sse(ChatStreamStageEvent(data=event))
+
+            outbound_findings = governance_audit.summarize(outbound.findings, policy)
+            yield _sse(ChatStreamGovernanceEvent(data=GovernanceEventData(
+                point="outbound",
+                mode=policy.mode,
+                screened=outbound.screened,
+                verdict=outbound.verdict,
+                findings=outbound_findings,
+            )))
+
+            if outbound.verdict == "blocked":
+                recorder.record_error(
+                    "governance_outbound", "Blocked by governance policy."
+                )
+                yield _sse(ChatStreamBlockedEvent(data=BlockedEventData(
+                    point="outbound",
+                    message=(
+                        "The generated answer was withheld by this "
+                        "deployment's governance policy."
+                    ),
+                    findings=outbound_findings,
+                )))
+                return
+
+            if hold_answer:
+                # The whole answer, screened, in one delta — the price of
+                # enforce is latency, never an unscreened token.
+                yield {"data": outbound.output_text}
 
             # After streaming completes, calculate and send cost breakdown.
             # The adapter populates self.usage with token counts after the stream.

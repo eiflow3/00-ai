@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { attachIndexRun, enqueueIndex, listIndexRuns, stopIndexRun } from '../api/client'
 import type {
   EnqueueResponse,
+  IndexGovernanceEventData,
   IndexRequest,
   IndexStage,
   IndexSummaryEventData,
@@ -57,6 +58,11 @@ export interface UseIndexRunResult {
   /** Files finished so far, successfully or as a skip. */
   finished: string[]
   failures: RunFailure[]
+  /**
+   * What governance found per screened file, in the order they were
+   * processed. Counts only — the matched values never reach this stream.
+   */
+  screenings: IndexGovernanceEventData[]
   summary: IndexSummaryEventData | null
   /** Chunks the run did not have to embed, because the index already held them. */
   reused: number
@@ -85,6 +91,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
   const [pending, setPending] = useState<string[]>([])
   const [finished, setFinished] = useState<string[]>([])
   const [failures, setFailures] = useState<RunFailure[]>([])
+  const [screenings, setScreenings] = useState<IndexGovernanceEventData[]>([])
   const [summary, setSummary] = useState<IndexSummaryEventData | null>(null)
   const [reused, setReused] = useState(0)
   const [rejected, setRejected] = useState<string[]>([])
@@ -148,6 +155,10 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
               totalFiles: event.data.total_files,
               chunkCount: event.data.chunk_count,
             })
+            break
+
+          case 'governance':
+            setScreenings((current) => [...current, event.data])
             break
 
           case 'completed':
@@ -247,6 +258,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
       setQueued([])
       setFinished([])
       setFailures([])
+      setScreenings([])
       setSummary(null)
       setReused(0)
 
@@ -270,6 +282,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
   const reset = useCallback(() => {
     setSummary(null)
     setFailures([])
+    setScreenings([])
     setFinished([])
     setQueued([])
     setPending([])
@@ -287,6 +300,7 @@ export function useIndexRun(onSettled?: (statuses: SourceStatus[]) => void): Use
     pending,
     finished,
     failures,
+    screenings,
     summary,
     reused,
     rejected,

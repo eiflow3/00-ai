@@ -17,6 +17,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.schemas.chunking import DEFAULT_STRATEGY, ChunkStrategy, ChunkingConfig
+from app.schemas.governance import GovernanceFindingSummary, GovernanceMode
 from app.schemas.source import IndexState, SourceStatus
 from app.services.chunking.tokens import DEFAULT_CHUNK_OVERLAP, DEFAULT_CHUNK_SIZE
 from app.services.embeddings import DEFAULT_EMBEDDING_MODEL
@@ -93,6 +94,17 @@ class IndexRequest(BaseModel):
     embedding_model: str = Field(
         default=DEFAULT_EMBEDDING_MODEL,
         description="Embedding model used to embed the chunks",
+    )
+
+    # Governance mode override for this run. None runs under the server's
+    # configured default; 'off' indexes content exactly as extracted, with the
+    # run stamped unscreened so that choice is visible later.
+    governance_mode: Optional[GovernanceMode] = Field(
+        default=None,
+        description=(
+            "Override the governance mode for this run: 'off', 'audit_only' "
+            "or 'enforce'. Omit to use the server default."
+        ),
     )
 
     @property
@@ -174,11 +186,12 @@ class IndexProgressEventData(BaseModel):
     source_key: str = Field(..., description="Object key being processed")
 
     # Which stage just finished: loading, extracting, describing_tables,
-    # chunking, embedding or upserting.
+    # screening, chunking, embedding or upserting.
     stage: Literal[
         "loading",
         "extracting",
         "describing_tables",
+        "screening",
         "chunking",
         "embedding",
         "upserting",
@@ -240,6 +253,46 @@ class IndexCompletedEvent(BaseModel):
 
     event: Literal["completed"] = Field(default="completed", description="The SSE event name")
     data: IndexCompletedEventData = Field(..., description="Result for one file")
+
+
+class IndexGovernanceEventData(BaseModel):
+    """Payload of the `governance` event, sent once per screened file.
+
+    What the governance stage found and did to one file, as counts per
+    entity type and class — never the matched values themselves. A blocked
+    verdict means the file was refused: nothing of it was chunked or
+    embedded, and an `error` event follows saying so.
+    """
+
+    # Which file was screened.
+    source_key: str = Field(..., description="Object key that was screened")
+
+    # The mode the screening ran under, after request/default resolution.
+    mode: GovernanceMode = Field(..., description="Mode the screening ran under")
+
+    # False when mode was 'off' — the file was indexed unscreened.
+    screened: bool = Field(..., description="Whether screening actually ran")
+
+    # 'blocked' when policy refused the file outright.
+    verdict: Literal["allowed", "blocked"] = Field(
+        default="allowed", description="Whether the file was allowed through"
+    )
+
+    # What was found, grouped: entity type, classification, action, count.
+    findings: list[GovernanceFindingSummary] = Field(
+        default_factory=list, description="Counts of what was found and done"
+    )
+
+
+class IndexGovernanceEvent(BaseModel):
+    """Reports what governance found in one file; the run continues."""
+
+    event: Literal["governance"] = Field(
+        default="governance", description="The SSE event name"
+    )
+    data: IndexGovernanceEventData = Field(
+        ..., description="What was found in one file, and what was done"
+    )
 
 
 class IndexErrorEventData(BaseModel):
@@ -420,6 +473,7 @@ IndexStreamEvent = (
     IndexStartedEvent
     | IndexQueuedEvent
     | IndexProgressEvent
+    | IndexGovernanceEvent
     | IndexCompletedEvent
     | IndexErrorEvent
     | IndexSummaryEvent

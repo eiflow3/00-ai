@@ -16,7 +16,13 @@
  * still needs one file, because a preview is a document being cut.
  */
 
-import type { ChunkStrategySpec, ChunkStrategy, SourceStatus } from '../../api/types'
+import type {
+  ChunkStrategySpec,
+  ChunkStrategy,
+  GovernanceMode,
+  SourceStatus,
+} from '../../api/types'
+import { GovernancePicker } from '../../components/GovernancePicker'
 import { Spinner } from '../../components/Spinner'
 
 /**
@@ -34,12 +40,15 @@ interface StrategyBenchProps {
   strategy: ChunkStrategy | null
   chunkSize: number
   chunkOverlap: number
+  /** Governance mode this run will index under. '' means the server default. */
+  governanceMode: GovernanceMode | ''
   previewing: boolean
   indexing: boolean
   onSourceKey: (sourceKey: string) => void
   onStrategy: (strategy: ChunkStrategy) => void
   onChunkSize: (size: number) => void
   onChunkOverlap: (overlap: number) => void
+  onGovernanceMode: (mode: GovernanceMode | '') => void
   onPreview: () => void
   onIndex: () => void
   onIndexAll: () => void
@@ -52,12 +61,14 @@ export function StrategyBench({
   strategy,
   chunkSize,
   chunkOverlap,
+  governanceMode,
   previewing,
   indexing,
   onSourceKey,
   onStrategy,
   onChunkSize,
   onChunkOverlap,
+  onGovernanceMode,
   onPreview,
   onIndex,
   onIndexAll,
@@ -157,6 +168,12 @@ export function StrategyBench({
         </label>
 
         <span className="text-xs text-slate-400">tokens</span>
+
+        <GovernancePicker
+          value={governanceMode}
+          onChange={onGovernanceMode}
+          disabled={indexing}
+        />
       </div>
 
       {!geometryValid ? (

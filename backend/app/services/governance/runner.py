@@ -39,6 +39,14 @@ class GovernanceStageFailure(RuntimeError):
     """A stage crashed under enforce; content must not pass unscreened."""
 
 
+class GovernanceBlocked(RuntimeError):
+    """Content was refused by policy — a verdict, not a malfunction.
+
+    Raised by pipelines (not by `run`, which reports the verdict on its
+    result) when a blocked document has to unwind out of a generator.
+    """
+
+
 async def run(text: str, policy: GovernancePolicy) -> GovernanceResult:
     """Screen one piece of content under the resolved policy."""
     if policy.mode is GovernanceMode.OFF:
@@ -72,10 +80,11 @@ async def run(text: str, policy: GovernancePolicy) -> GovernanceResult:
             ],
         )
 
+    edits = []
     if policy.mode is GovernanceMode.AUDIT_ONLY:
         output, verdict = text, "allowed"
     else:
-        output, verdict = actions.apply(text, findings, policy)
+        output, verdict, edits = actions.apply(text, findings, policy)
 
     duration_ms = (time.perf_counter() - started) * 1000
     logger.info(
@@ -84,6 +93,7 @@ async def run(text: str, policy: GovernancePolicy) -> GovernanceResult:
     )
     return GovernanceResult(
         output_text=output,
+        edits=edits,
         findings=findings,
         screened=True,
         verdict=verdict,

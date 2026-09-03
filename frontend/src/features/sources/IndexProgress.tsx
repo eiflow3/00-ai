@@ -14,7 +14,11 @@
  * contract, and the panel reflects it.
  */
 
-import type { IndexStage, IndexSummaryEventData } from '../../api/types'
+import type {
+  IndexGovernanceEventData,
+  IndexStage,
+  IndexSummaryEventData,
+} from '../../api/types'
 import type { RunFailure, RunProgress } from '../../hooks/useIndexRun'
 import { Spinner } from '../../components/Spinner'
 
@@ -25,6 +29,8 @@ interface IndexProgressProps {
   /** Keys still waiting their turn behind the file being embedded. */
   pending: string[]
   failures: RunFailure[]
+  /** What governance found per screened file. Counts only, never values. */
+  screenings: IndexGovernanceEventData[]
   summary: IndexSummaryEventData | null
   /** Chunks the run did not have to embed, because the index already held them. */
   reused: number
@@ -43,9 +49,24 @@ const STAGE_LABEL: Record<IndexStage, string> = {
   loading: 'Reading from storage',
   extracting: 'Extracting text',
   describing_tables: 'Describing tables',
+  screening: 'Screening for sensitive data',
   chunking: 'Splitting into chunks',
   embedding: 'Embedding',
   upserting: 'Writing to the index',
+}
+
+/** "2× email (personal, mask)" — one screening's findings, readably. */
+function screeningLine(screening: IndexGovernanceEventData): string {
+  if (!screening.screened) return 'indexed unscreened — governance was off'
+  if (screening.verdict === 'blocked') return 'refused by governance policy'
+  if (screening.findings.length === 0) return 'screened, no findings'
+  return screening.findings
+    .map((finding) => {
+      const kind = finding.entity_type.replace(/_/g, ' ')
+      const clause = [finding.classification, finding.action].filter(Boolean).join(', ')
+      return `${finding.count}× ${kind}${clause ? ` (${clause})` : ''}`
+    })
+    .join(' · ')
 }
 
 export function IndexProgress({
@@ -54,6 +75,7 @@ export function IndexProgress({
   queued,
   pending,
   failures,
+  screenings,
   summary,
   reused,
   rejected,
@@ -161,6 +183,24 @@ export function IndexProgress({
           Not queued — the limit of {limit} waiting file(s) is reached:{' '}
           <span className="font-mono">{rejected.join(', ')}</span>
         </p>
+      ) : null}
+
+      {screenings.length > 0 ? (
+        <ul className="mt-3 space-y-1">
+          {screenings.map((screening, index) => (
+            <li
+              key={`${screening.source_key}-${index}`}
+              className={`text-xs ${
+                screening.screened && screening.verdict === 'allowed'
+                  ? 'text-slate-400'
+                  : 'text-state-stale'
+              }`}
+            >
+              <span className="font-mono">{screening.source_key}</span> —{' '}
+              {screeningLine(screening)}
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       {failures.length > 0 ? (

@@ -40,12 +40,15 @@ from typing import AsyncIterator, Optional
 from pydantic import BaseModel
 
 from app.config import settings
+from app.schemas.governance import GovernanceMode, GovernancePolicy
 from app.schemas.ingestion import (
     EnqueueResponse,
     IndexCompletedEvent,
     IndexCompletedEventData,
     IndexErrorEvent,
     IndexErrorEventData,
+    IndexGovernanceEvent,
+    IndexGovernanceEventData,
     IndexProgressEvent,
     IndexProgressEventData,
     IndexQueuedEvent,
@@ -67,6 +70,8 @@ from app.services import (
     source_cache,
     sync_status,
 )
+from app.services.governance import policy as governance_policy
+from app.services.governance.runner import GovernanceBlocked
 from app.services.index_registry import QueuedFile
 from app.services.text_extraction import UnsupportedSourceType
 
@@ -113,6 +118,20 @@ class _Job:
         # of the four the first one's way.
         self.chunk_size = request.chunk_size
         self.chunk_overlap = request.chunk_overlap
+
+        # The governance policy every file in this run is screened under:
+        # the configured default, with the request's mode override (the one
+        # field a request may touch) layered on top. Fixed per run, like the
+        # embedding model — two files screened under two policies in one run
+        # would make its audit trail unreadable.
+        self.governance = governance_policy.resolve(
+            default=governance_policy.default_policy(),
+            request=(
+                GovernancePolicy(mode=request.governance_mode)
+                if request.governance_mode is not None
+                else None
+            ),
+        )
 
         # Events emitted so far, each under an increasing cursor. This is what
         # a re-attaching client replays.
@@ -434,6 +453,7 @@ async def _process(job: _Job, entry: QueuedFile) -> None:
             job.embedding_model,
             force=entry.force,
             space=space,
+            governance=job.governance,
         ):
             await job.emit(
                 IndexProgressEvent(
@@ -446,6 +466,44 @@ async def _process(job: _Job, entry: QueuedFile) -> None:
                     )
                 )
             )
+            # The screening stage carries its own report: what was found in
+            # this file and what was done about it — counts only.
+            if stage == "screening" and result.governance is not None:
+                await job.emit(
+                    IndexGovernanceEvent(
+                        data=IndexGovernanceEventData(
+                            source_key=source_key,
+                            mode=GovernanceMode(result.governance_mode),
+                            screened=result.screened,
+                            verdict=result.governance_verdict,
+                            findings=result.governance,
+                        )
+                    )
+                )
+
+    except GovernanceBlocked as exc:
+        # A verdict, not a malfunction: policy refused the file, so nothing
+        # was chunked or embedded. The governance event above already said
+        # what triggered it; this records the outcome and moves on.
+        job.skipped += 1
+        job.processed_keys.append(source_key)
+        await run_store.file_finished(
+            job.job_id,
+            source_key,
+            "blocked",
+            error=str(exc),
+            variant=entry.variant,
+        )
+        await job.emit(
+            IndexErrorEvent(
+                data=IndexErrorEventData(
+                    source_key=source_key,
+                    stage="screening",
+                    message="Refused by governance policy; nothing was embedded.",
+                )
+            )
+        )
+        return
 
     except UnsupportedSourceType as exc:
         # Not a failure of the run — just a file this pipeline cannot read.

@@ -199,6 +199,7 @@ export function SourcesView({ onOpenVariant }: SourcesViewProps) {
         queued={run.queued}
         pending={run.pending}
         failures={run.failures}
+        screenings={run.screenings}
         summary={run.summary}
         reused={run.reused}
         rejected={run.rejected}

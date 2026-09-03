@@ -27,6 +27,7 @@ import type {
   GoldenRun,
   GoldenRunRequest,
   GoldenSet,
+  GovernancePolicyView,
   GoldenSetDetail,
   EvaluationOptions,
   EvaluationRequest,
@@ -295,6 +296,16 @@ export function stopIndexRun(jobId: string): Promise<IndexRun> {
  */
 export function listModels(signal?: AbortSignal): Promise<ModelOption[]> {
   return request<ModelOption[]>(url('/chat/models'), { signal })
+}
+
+/**
+ * Read the resolved global governance policy.
+ *
+ * The mode pickers label their "server default" option from this rather than
+ * hardcoding what the deployment was configured with.
+ */
+export function getGovernancePolicy(signal?: AbortSignal): Promise<GovernancePolicyView> {
+  return request<GovernancePolicyView>(url('/governance/policy'), { signal })
 }
 
 /**

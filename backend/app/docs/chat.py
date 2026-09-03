@@ -14,7 +14,9 @@ from typing import Any
 from pydantic.json_schema import models_json_schema
 
 from app.schemas.chat import (
+    ChatStreamBlockedEvent,
     ChatStreamErrorEvent,
+    ChatStreamGovernanceEvent,
     ChatStreamMessageEvent,
     ChatStreamRetrievalEvent,
     ChatStreamStageEvent,
@@ -26,6 +28,8 @@ from app.schemas.chat import (
 _EVENT_MODELS = (
     ChatStreamTraceEvent,
     ChatStreamStageEvent,
+    ChatStreamGovernanceEvent,
+    ChatStreamBlockedEvent,
     ChatStreamErrorEvent,
     ChatStreamRetrievalEvent,
     ChatStreamMessageEvent,
@@ -77,6 +81,8 @@ A `text/event-stream` of SSE events. Emitted in this order:
 | --- | --- | --- |
 | `trace` | exactly 1, always first | The id this request is being recorded under. |
 | `stage` | 2 per pipeline step | One step starting, and later the same step ending with its duration. |
+| `governance` | 2 (one per screening) | What governance found in the question, then in the answer — counts per entity type and class, never the matched values. |
+| `blocked` | 0 or 1, terminal | Governance policy refused the question or the answer. The stream ends after it, with no answer text. |
 | `error` | 0 or more | Which pipeline stage failed, and why. |
 | `retrieval` | exactly 1 | The chunks that ground the answer, each with its similarity score. |
 | *(unnamed)* | 0 or more | One delta of answer text. Has no `event:` line, so it arrives as SSE's default `message` type. |
@@ -101,8 +107,22 @@ A `text/event-stream` of SSE events. Emitted in this order:
   enumerate the stages it knows about, or a step added to the pipeline later
   will be silently dropped. `name` is stable and safe to branch on for a client
   that wants to treat one specific step differently. The steps sent today are
-  `embedding`, `search`, `ranking` (retrieval, or `context` when the client
-  supplied the chunks itself), then `prompt` and `generation`.
+  `governance_inbound`, then `embedding`, `search`, `ranking` (retrieval, or
+  `context` when the client supplied the chunks itself), then `prompt`,
+  `generation` and `governance_outbound`.
+* `governance` reports each screening's outcome: `point` says whether it was
+  the question (`inbound`) or the answer (`outbound`), `mode` what it ran
+  under, and `findings` carries counts per entity type, classification and
+  action — the matched values themselves never travel on this stream. With
+  the mode `off`, the event still arrives with `screened: false`, so a client
+  can show the request ran unscreened.
+* `blocked` is a verdict, not an error: policy examined the content and
+  refused it. It is terminal — nothing follows it. Distinguish it from
+  `error`, which reports a stage that *broke*.
+* Under `governance_mode: "enforce"` the answer does not stream token by
+  token: it is held back, screened whole, and arrives as one final delta
+  after `governance_outbound` completes. Under `audit_only` and `off` deltas
+  stream live, exactly as before.
 * `retrieval` always arrives before the first text delta, so a client can render
   citations while the answer is still streaming. It is sent even when retrieval
   is disabled or matched nothing — with an empty `chunks` list.

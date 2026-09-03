@@ -20,7 +20,7 @@ import { ProductionBanner } from './ProductionBanner'
 import { Scoreboard } from './Scoreboard'
 import { ALL_FILES, StrategyBench } from './StrategyBench'
 import { VariantsTable } from './VariantsTable'
-import type { ChunkStrategy, ChunkVariant } from '../../api/types'
+import type { ChunkStrategy, ChunkVariant, GovernanceMode } from '../../api/types'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useChunkPreview } from '../../hooks/useChunkPreview'
 import { useGoldenSets } from '../../hooks/useGoldenSets'
@@ -50,6 +50,8 @@ export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
   const [pickedStrategy, setPickedStrategy] = useState<ChunkStrategy | null>(null)
   const [chunkSize, setChunkSize] = useState(DEFAULT_CHUNK_SIZE)
   const [chunkOverlap, setChunkOverlap] = useState(DEFAULT_CHUNK_OVERLAP)
+  // '' sends nothing, so the server's configured governance default applies.
+  const [governanceMode, setGovernanceMode] = useState<GovernanceMode | ''>('')
   const [deleting, setDeleting] = useState<ChunkVariant | null>(null)
 
   const sources = useSources()
@@ -103,13 +105,20 @@ export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
     [],
   )
 
+  // Sent only when a mode was actually picked; '' means the server default.
+  const governanceFor = useCallback(
+    () => (governanceMode !== '' ? { governance_mode: governanceMode } : {}),
+    [governanceMode],
+  )
+
   const handleIndex = useCallback(() => {
     if (sourceKey === '' || strategy === null) return
     void run.enqueue({
       ...filesFor(sourceKey),
+      ...governanceFor(),
       variant: `${strategy}-${chunkSize}-${chunkOverlap}`,
     })
-  }, [chunkOverlap, chunkSize, filesFor, run, sourceKey, strategy])
+  }, [chunkOverlap, chunkSize, filesFor, governanceFor, run, sourceKey, strategy])
 
   /**
    * Queue the same file under every strategy.
@@ -123,10 +132,11 @@ export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
     for (const spec of preview.strategies) {
       void run.enqueue({
         ...filesFor(sourceKey),
+        ...governanceFor(),
         variant: `${spec.id}-${chunkSize}-${chunkOverlap}`,
       })
     }
-  }, [chunkOverlap, chunkSize, filesFor, preview.strategies, run, sourceKey])
+  }, [chunkOverlap, chunkSize, filesFor, governanceFor, preview.strategies, run, sourceKey])
 
   const handleScore = useCallback(
     (setId: string, topK: number, generate: boolean) => {
@@ -168,12 +178,14 @@ export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
         strategy={strategy}
         chunkSize={chunkSize}
         chunkOverlap={chunkOverlap}
+        governanceMode={governanceMode}
         previewing={preview.loading}
         indexing={run.running}
         onSourceKey={setPickedSource}
         onStrategy={setPickedStrategy}
         onChunkSize={setChunkSize}
         onChunkOverlap={setChunkOverlap}
+        onGovernanceMode={setGovernanceMode}
         onPreview={handlePreview}
         onIndex={handleIndex}
         onIndexAll={handleIndexAll}
@@ -193,6 +205,7 @@ export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
         queued={run.queued}
         pending={run.pending}
         failures={run.failures}
+        screenings={run.screenings}
         summary={run.summary}
         reused={run.reused}
         rejected={run.rejected}

@@ -13,7 +13,22 @@ policy — it never reasons about layering itself.  Two rules:
 
 from typing import Optional
 
-from app.schemas.governance import GovernancePolicy
+from app.config import settings
+from app.schemas.governance import GovernanceMode, GovernancePolicy, VerbatimMode
+
+
+def default_policy() -> GovernancePolicy:
+    """The deployment's global policy, read from config.
+
+    Config keeps the knobs as plain strings (it sits below schemas in the
+    layering); this is the one place they are parsed, so a typo in .env is a
+    loud error at first use rather than a mode silently ignored.
+    """
+    return GovernancePolicy(
+        mode=GovernanceMode(settings.governance_mode),
+        verbatim=VerbatimMode(settings.governance_verbatim),
+        own_domains=list(settings.governance_own_domains),
+    )
 
 
 def resolve(

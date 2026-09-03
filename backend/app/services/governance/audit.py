@@ -14,9 +14,16 @@ Every record carries the verbatim stamp, so "which records hold raw values"
 is a query, not an investigation.
 """
 
+from collections import Counter
 from typing import Any
 
-from app.schemas.governance import Finding, VerbatimMode
+from app.schemas.governance import (
+    Finding,
+    GovernanceAction,
+    GovernanceFindingSummary,
+    GovernancePolicy,
+    VerbatimMode,
+)
 
 # Values this short mask to stars entirely — one visible char each side
 # would be most of the value.
@@ -40,6 +47,35 @@ def shape(finding: Finding, verbatim: VerbatimMode) -> dict[str, Any]:
     elif verbatim is VerbatimMode.FULL:
         record["value"] = finding.text
     return record
+
+
+def summarize(
+    findings: list[Finding], policy: GovernancePolicy
+) -> list[GovernanceFindingSummary]:
+    """Findings grouped into wire-safe lines: type, class, action, count.
+
+    This is what SSE events and run records carry — the raw values stay in
+    process, per the module contract above.
+    """
+    counts: Counter[tuple] = Counter(
+        (
+            finding.entity_type,
+            finding.classification,
+            policy.actions.get(finding.classification, GovernanceAction.TAG),
+        )
+        for finding in findings
+    )
+    return [
+        GovernanceFindingSummary(
+            entity_type=entity_type,
+            classification=classification,
+            action=action,
+            count=count,
+        )
+        for (entity_type, classification, action), count in sorted(
+            counts.items(), key=lambda item: -item[1]
+        )
+    ]
 
 
 def _excerpt(value: str) -> str:

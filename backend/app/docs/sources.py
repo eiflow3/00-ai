@@ -18,6 +18,7 @@ from pydantic.json_schema import models_json_schema
 from app.schemas.ingestion import (
     IndexCompletedEvent,
     IndexErrorEvent,
+    IndexGovernanceEvent,
     IndexProgressEvent,
     IndexQueuedEvent,
     IndexStartedEvent,
@@ -29,6 +30,7 @@ _EVENT_MODELS = (
     IndexStartedEvent,
     IndexQueuedEvent,
     IndexProgressEvent,
+    IndexGovernanceEvent,
     IndexCompletedEvent,
     IndexErrorEvent,
     IndexSummaryEvent,
@@ -296,7 +298,8 @@ A `text/event-stream` reporting one run's progress. Events arrive in this order:
 | --- | --- | --- |
 | `started` | exactly 1, always first | The run's id, the files it opened with, and the embedding model. |
 | `queued` | 0 or more | Files added to this run after it began, because a later request joined it. |
-| `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `extracting`, `describing_tables`, `chunking`, `embedding`, `upserting`. |
+| `progress` | 0 or more per file | One pipeline stage finishing: `loading`, `extracting`, `describing_tables`, `screening`, `chunking`, `embedding`, `upserting`. |
+| `governance` | 0 or 1 per file | What the screening stage found in that file and what it did — counts per entity type and class, never the matched values. |
 | `completed` | 0 or 1 per file | That file's chunk count, how many chunks were reused without re-embedding, and how many were pruned. |
 | `error` | 0 or more | One file failing. The run continues. |
 | `summary` | exactly 1, always last | Totals, plus the final state of every processed file. |
@@ -326,6 +329,12 @@ is replayed from run history instead. The events are the same either way.
 * A file reported by `error` never also reports `completed` as indexed — except
   for an unsupported file type, which reports `completed` with `skipped: true`
   followed by an `error` explaining what was skipped.
+* `governance` arrives right after that file's `screening` stage. `screened:
+  false` means the run's mode was `off` and the file was indexed exactly as
+  extracted — the stamp that makes an unscreened index visible later. A
+  `verdict` of `blocked` means policy refused the file: nothing of it was
+  chunked or embedded, and an `error` with stage `screening` follows instead
+  of a `completed`.
 * `completed.reused` counts chunks the index already held, identical and from
   the same model, which were therefore not embedded again. A non-zero value
   means an interrupted run was resumed rather than repeated.

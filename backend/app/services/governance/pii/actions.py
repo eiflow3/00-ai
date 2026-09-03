@@ -12,7 +12,12 @@ Two properties are load-bearing:
 import hashlib
 import hmac
 
-from app.schemas.governance import Finding, GovernanceAction, GovernancePolicy
+from app.schemas.governance import (
+    Finding,
+    GovernanceAction,
+    GovernancePolicy,
+    SpanEdit,
+)
 
 # Keys the pseudonym HMAC. Deliberately a constant for now: stability across
 # runs is the requirement. Moving it to config makes pseudonyms
@@ -37,19 +42,22 @@ def pseudonymize(value: str) -> str:
 
 def apply(
     text: str, findings: list[Finding], policy: GovernancePolicy
-) -> tuple[str, str]:
-    """Apply the policy's action per finding; returns (text, verdict).
+) -> tuple[str, str, list[SpanEdit]]:
+    """Apply the policy's action per finding; returns (text, verdict, edits).
 
     A single REJECT finding blocks the whole content — nothing downstream
-    should see any of it, so no partial redaction is attempted.
+    should see any of it, so no partial redaction is attempted. The edits
+    say which spans were replaced and by how much, so a caller holding
+    offsets into the original text can shift them.
     """
     def action_for(finding: Finding) -> GovernanceAction:
         return policy.actions.get(finding.classification, GovernanceAction.TAG)
 
     if any(action_for(f) is GovernanceAction.REJECT for f in findings):
-        return "", "blocked"
+        return "", "blocked", []
 
     out = text
+    edits: list[SpanEdit] = []
     for finding in sorted(findings, key=lambda f: f.start, reverse=True):
         action = action_for(finding)
         if action is GovernanceAction.MASK:
@@ -59,4 +67,24 @@ def apply(
         else:  # TAG keeps the text; the finding itself is the tag.
             continue
         out = out[:finding.start] + replacement + out[finding.end:]
-    return out, "allowed"
+        edits.append(
+            SpanEdit(start=finding.start, end=finding.end, new_length=len(replacement))
+        )
+    edits.reverse()  # built right-to-left; callers want offset order
+    return out, "allowed", edits
+
+
+def offset_after_edits(edits: list[SpanEdit], position: int) -> int:
+    """Where an offset into the original text now falls in the edited text.
+
+    A position inside a replaced span maps to the end of its replacement —
+    the nearest place that still exists.
+    """
+    shifted = position
+    for edit in edits:
+        if edit.end <= position:
+            shifted += edit.new_length - (edit.end - edit.start)
+        elif edit.start < position:
+            # Inside the replaced span: clamp to the replacement's end.
+            shifted += edit.new_length - (position - edit.start)
+    return max(0, shifted)

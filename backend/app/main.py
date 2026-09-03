@@ -15,6 +15,7 @@ from app.routers.chat import router as chat_router
 from app.routers.chunking import router as chunking_router
 from app.routers.evaluations import router as evaluations_router
 from app.routers.golden import router as golden_router
+from app.routers.governance import router as governance_router
 from app.routers.prompts import router as prompts_router
 from app.routers.sources import router as sources_router
 from app.routers.traces import router as traces_router
@@ -96,6 +97,7 @@ app.include_router(evaluations_router)
 app.include_router(prompts_router)
 app.include_router(golden_router)
 app.include_router(artifacts_router)
+app.include_router(governance_router)
 
 # Register schemas for streamed events, which FastAPI can't infer from routes.
 register_openapi_components(app)
