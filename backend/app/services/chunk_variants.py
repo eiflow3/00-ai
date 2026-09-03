@@ -37,20 +37,11 @@ from app.schemas.chunking import (
     ChunkingConfig,
     VariantState,
 )
+from app.schemas.source import IndexedDocument
 from app.services import index_catalog
-from app.services.embeddings import EMBEDDING_MODEL_METADATA_KEY
-from app.services.provenance import (
-    METADATA_CHUNK_TOTAL,
-    METADATA_EMBEDDED_AT,
-    METADATA_SOURCE_KEY,
-    parse_vector_id,
-    to_datetime,
-    vector_id_for,
-)
 from app.services.vector_store import (
     VectorSpace,
     delete_namespace,
-    fetch_vectors,
     list_vector_ids,
     namespace_stats,
 )
@@ -67,11 +58,6 @@ VARIANT_SEPARATOR = "-"
 
 # Between the parts of the name a person reads.
 LABEL_SEPARATOR = " · "
-
-# The chunk whose metadata describes the whole file — position 0 carries the
-# source key, the expected chunk total and the embed time.
-DESCRIBING_CHUNK = 0
-
 
 class UnknownVariant(ValueError):
     """Raised when a variant id does not name a configuration we can run."""
@@ -181,15 +167,90 @@ def resolve(
     return fallback, PRODUCTION_VARIANT
 
 
-def _documents(ids: list[str]) -> dict[str, list[str]]:
-    """Group a namespace's vector ids by the document each belongs to."""
-    grouped: dict[str, list[str]] = {}
-    for vector_id in ids:
-        document_id, index = parse_vector_id(vector_id)
-        if index is None:
-            continue
-        grouped.setdefault(document_id, []).append(vector_id)
-    return grouped
+async def documents_in(identifier: str) -> dict[str, IndexedDocument]:
+    """Describe every file one variant holds, file by file.
+
+    The per-file view the Sources screen needs: each namespace keeps its own
+    record of what it embedded and when, so a copy cut before the file changed
+    can be told apart from one cut afterwards.
+
+    Args:
+        identifier: The variant id, or empty for production.
+
+    Returns:
+        Each source key mapped to that variant's record of it.
+    """
+    return await index_catalog.list_indexed_documents(space_for(identifier))
+
+
+async def documents_by_variant() -> dict[str, dict[str, IndexedDocument]]:
+    """Describe every variant that holds vectors, file by file.
+
+    One pass over the lab index. Both the variants table and the per-file
+    listing on the Sources screen are built from this, so neither pays for its
+    own walk.
+
+    Returns:
+        Each variant id mapped to what it holds, keyed by source key. A
+        namespace whose name is not a variant id is skipped rather than guessed
+        at — something else wrote it, and inventing a configuration for it would
+        put a row on screen that no strategy can reproduce.
+    """
+    namespaces = await asyncio.to_thread(
+        namespace_stats, settings.pinecone_lab_index_name
+    )
+
+    names = [name for name in namespaces if name and _is_variant(name)]
+    held = await asyncio.gather(*(documents_in(name) for name in names))
+
+    return {name: documents for name, documents in zip(names, held) if documents}
+
+
+def _is_variant(identifier: str) -> bool:
+    """Whether an id names a configuration this app can still run."""
+    try:
+        parse(identifier)
+    except UnknownVariant:
+        return False
+    return True
+
+
+def _to_variant(identifier: str, documents: dict[str, IndexedDocument]) -> ChunkVariant:
+    """Roll one variant's per-file records up into the row a client renders."""
+    vector_count = sum(document.chunk_count for document in documents.values())
+    chunk_total = sum(document.chunk_total for document in documents.values())
+
+    # Fewer vectors than the last run said a file should have means the run
+    # stopped partway. Scoring that variant would blame the strategy for text
+    # that was never embedded, so it is reported, not hidden.
+    interrupted = any(
+        document.chunk_total and document.chunk_count < document.chunk_total
+        for document in documents.values()
+    )
+
+    stamps = [
+        document.embedded_at
+        for document in documents.values()
+        if document.embedded_at is not None
+    ]
+
+    models = [
+        document.embedding_model
+        for document in documents.values()
+        if document.embedding_model
+    ]
+
+    return ChunkVariant(
+        variant_id=identifier,
+        label=label_for(parse(identifier)),
+        config=parse(identifier),
+        embedding_model=models[0] if models else "",
+        source_keys=sorted(documents),
+        vector_count=vector_count,
+        chunk_total=chunk_total,
+        state=VariantState.INTERRUPTED if interrupted else VariantState.READY,
+        embedded_at=max(stamps) if stamps else None,
+    )
 
 
 async def describe(identifier: str) -> Optional[ChunkVariant]:
@@ -202,92 +263,30 @@ async def describe(identifier: str) -> Optional[ChunkVariant]:
         The variant, or None when it holds no vectors — an experiment that was
         never run, or one that has been deleted.
     """
-    try:
-        config = parse(identifier)
-    except UnknownVariant:
+    if not _is_variant(identifier):
         return None
 
-    space = space_for(identifier)
-    ids = await asyncio.to_thread(list_vector_ids, "", space)
-    if not ids:
+    documents = await documents_in(identifier)
+    if not documents:
         return None
 
-    grouped = _documents(ids)
-
-    # One vector per document describes the whole of it, so a variant holding
-    # three files costs three reads rather than one per chunk.
-    describing = [
-        vector_id_for(document_id, DESCRIBING_CHUNK) for document_id in grouped
-    ]
-    records = await asyncio.to_thread(fetch_vectors, describing, space)
-
-    source_keys: list[str] = []
-    expected = 0
-    embedded_at = None
-    embedding_model = ""
-    interrupted = False
-
-    for document_id, document_ids in grouped.items():
-        metadata = (records.get(vector_id_for(document_id, DESCRIBING_CHUNK)) or {}).get(
-            "metadata"
-        ) or {}
-
-        key = str(metadata.get(METADATA_SOURCE_KEY) or "")
-        if key:
-            source_keys.append(key)
-
-        embedding_model = embedding_model or str(
-            metadata.get(EMBEDDING_MODEL_METADATA_KEY) or ""
-        )
-
-        try:
-            total = int(float(metadata.get(METADATA_CHUNK_TOTAL) or 0))
-        except (TypeError, ValueError):
-            total = 0
-        expected += total
-
-        # Fewer vectors than the last run said the file should have means the
-        # run stopped partway. Scoring that variant would blame the strategy
-        # for text that was never embedded, so it is reported, not hidden.
-        if total and len(document_ids) < total:
-            interrupted = True
-
-        stamped = to_datetime(metadata.get(METADATA_EMBEDDED_AT))
-        if stamped and (embedded_at is None or stamped > embedded_at):
-            embedded_at = stamped
-
-    return ChunkVariant(
-        variant_id=identifier,
-        label=label_for(config),
-        config=config,
-        embedding_model=embedding_model,
-        source_keys=sorted(source_keys),
-        vector_count=len(ids),
-        chunk_total=expected,
-        state=VariantState.INTERRUPTED if interrupted else VariantState.READY,
-        embedded_at=embedded_at,
-    )
+    return _to_variant(identifier, documents)
 
 
 async def list_variants() -> list[ChunkVariant]:
     """List every variant that currently holds vectors.
 
     Returns:
-        The variants, newest embedding first. A namespace whose name is not a
-        variant id is skipped rather than guessed at — something else wrote it,
-        and inventing a configuration for it would put a row on screen that no
-        strategy can reproduce.
+        The variants, newest embedding first.
     """
-    namespaces = await asyncio.to_thread(
-        namespace_stats, settings.pinecone_lab_index_name
+    variants = [
+        _to_variant(identifier, documents)
+        for identifier, documents in (await documents_by_variant()).items()
+    ]
+    variants.sort(
+        key=lambda variant: (variant.embedded_at is None, variant.embedded_at),
+        reverse=True,
     )
-
-    described = await asyncio.gather(
-        *(describe(name) for name in namespaces if name)
-    )
-
-    variants = [variant for variant in described if variant is not None]
-    variants.sort(key=lambda variant: (variant.embedded_at is None, variant.embedded_at), reverse=True)
 
     logger.debug("%d variant(s) in %s", len(variants), settings.pinecone_lab_index_name)
     return variants

@@ -21,6 +21,9 @@ from app.docs.chunking import (
     CHUNKING_TAG,
     DELETE_VARIANT_DESCRIPTION,
     LIST_VARIANTS_DESCRIPTION,
+    POINT_PRODUCTION_DESCRIPTION,
+    POINT_PRODUCTION_RESPONSES,
+    PRODUCTION_DESCRIPTION,
     PREVIEW_DESCRIPTION,
     SCORE_DESCRIPTION,
     SCORE_RESPONSES,
@@ -33,6 +36,8 @@ from app.schemas.chunking import (
     ChunkPreviewResponse,
     ChunkStrategySpec,
     ChunkVariant,
+    ProductionSpace,
+    ProductionSpaceRequest,
     VariantDeleteResponse,
 )
 from app.schemas.variant_score import (
@@ -40,7 +45,13 @@ from app.schemas.variant_score import (
     ScoreRun,
     VariantScoreRequest,
 )
-from app.services import chunk_preview, chunk_variants, variant_score_queue
+from app.services import (
+    answer_space,
+    chunk_preview,
+    chunk_variants,
+    variant_score_queue,
+)
+from app.services.answer_space import UnusableSpace
 from app.services.chunk_variants import UnknownVariant
 from app.services.derived_artifacts import DerivedTextMissing
 from app.services.chunking.base import UnknownStrategy
@@ -229,6 +240,52 @@ async def stop_score(job_id: str) -> ScoreRun:
     return run
 
 
+@router.get(
+    "/production",
+    response_model=ProductionSpace,
+    summary="Report which vector space answers by default",
+    response_description="The space production points at, and whether it can answer.",
+    description=PRODUCTION_DESCRIPTION,
+)
+async def get_production() -> ProductionSpace:
+    """Report where the application answers questions from.
+
+    Returns:
+        The pointer, with the space's live vector count and file list.
+    """
+    return await answer_space.describe()
+
+
+@router.put(
+    "/production",
+    response_model=ProductionSpace,
+    summary="Point production at a different vector space",
+    response_description="Where production now answers from.",
+    description=POINT_PRODUCTION_DESCRIPTION,
+    responses=POINT_PRODUCTION_RESPONSES,
+)
+async def point_production(body: ProductionSpaceRequest) -> ProductionSpace:
+    """Adopt one variant as the space every ungrounded question reads.
+
+    Args:
+        body: The variant to answer from, or empty for the original index.
+
+    Returns:
+        Where production now answers from.
+
+    Raises:
+        HTTPException: 400 when the id is not one this app can run, 409 when
+            the space it names cannot answer — empty, or holding an incomplete
+            copy of a file.
+    """
+    try:
+        return await answer_space.point_at(body.variant_id)
+    except UnknownVariant as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except UnusableSpace as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 # Declared last: `{variant_id}` would otherwise swallow the score routes above,
 # and Starlette matches in declaration order.
 @router.delete(
@@ -237,7 +294,10 @@ async def stop_score(job_id: str) -> ScoreRun:
     summary="Delete a variant and its vectors",
     response_description="How many vectors were removed.",
     description=DELETE_VARIANT_DESCRIPTION,
-    responses={400: {"description": "Not a variant this app can run."}},
+    responses={
+        400: {"description": "Not a variant this app can run."},
+        409: {"description": "This is the space production answers from."},
+    },
 )
 async def delete_variant(variant_id: str) -> VariantDeleteResponse:
     """Drop one variant's vectors, leaving the source files alone.
@@ -249,8 +309,21 @@ async def delete_variant(variant_id: str) -> VariantDeleteResponse:
         The variant, and how many vectors were deleted.
 
     Raises:
-        HTTPException: 400 when the id is not one this app can run.
+        HTTPException: 400 when the id is not one this app can run, 409 when it
+            is the space production answers from.
     """
+    # Refused rather than followed by a silent fallback: deleting what every
+    # question is answered from is a decision, and pointing production
+    # somewhere else first is how it gets made.
+    if variant_id == await answer_space.current():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{variant_id} is the space production answers from. Point "
+                "production somewhere else before deleting it."
+            ),
+        )
+
     try:
         deleted = await chunk_variants.delete(variant_id)
     except UnknownVariant as exc:

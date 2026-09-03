@@ -18,11 +18,13 @@ import type { FormEvent } from 'react'
 
 import { AnswerColumn } from './AnswerColumn'
 import { ModelPicker } from './ModelPicker'
-import { PRODUCTION_LABEL, VariantPicker } from './VariantPicker'
+import { VariantPicker } from './VariantPicker'
+import { productionLabel } from './answering'
 import type { ModelOption } from '../../api/types'
 import { EmptyState } from '../../components/EmptyState'
 import { useChat } from '../../hooks/useChat'
 import { useModels } from '../../hooks/useModels'
+import { useProduction } from '../../hooks/useProduction'
 import { useVariants } from '../../hooks/useVariants'
 
 interface ChatViewProps {
@@ -50,6 +52,7 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
   const right = useChat()
   const models = useModels()
   const variants = useVariants()
+  const production = useProduction()
 
   const model: ModelOption | null =
     models.options.find((option) => option.model === picked && option.available) ??
@@ -62,7 +65,7 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
   function nameFor(variantId: string): string {
     return (
       variants.variants.find((variant) => variant.variant_id === variantId)?.label ??
-      PRODUCTION_LABEL
+      productionLabel(production.production)
     )
   }
 
@@ -97,6 +100,7 @@ export function ChatView({ initialVariant = '' }: ChatViewProps) {
 
       <VariantPicker
         variants={variants.variants}
+        production={production.production}
         primary={primary}
         secondary={secondary}
         disabled={streaming}

@@ -186,22 +186,25 @@ async def read_document(
     )
 
 
-async def get_indexed_document(source_key: str) -> Optional[IndexedDocument]:
-    """Return what the index holds for one source file.
+async def get_indexed_document(
+    source_key: str, space: Optional[VectorSpace] = None
+) -> Optional[IndexedDocument]:
+    """Return what a vector space holds for one source file.
 
     Args:
         source_key: The object key within the bucket.
+        space: Which index and namespace to read. Defaults to production.
 
     Returns:
-        The index's record of the file, or None if nothing is indexed for it.
+        That space's record of the file, or None if nothing is indexed for it.
     """
-    ids = await list_vector_ids_for(source_key)
+    ids = await list_vector_ids_for(source_key, space)
     if not ids:
         return None
 
     # Every chunk carries the same provenance, so one is enough to describe the
     # document. Reading the first keeps this cheap on files with many chunks.
-    records = await asyncio.to_thread(fetch_vectors, ids[:1])
+    records = await asyncio.to_thread(fetch_vectors, ids[:1], space)
 
     return _to_indexed_document(
         source_key, _metadata_of(records.get(ids[0], {})), len(ids)
@@ -227,8 +230,10 @@ async def get_chunks(
     return _to_chunks(ids, await asyncio.to_thread(fetch_vectors, ids, space))
 
 
-async def list_indexed_documents() -> dict[str, IndexedDocument]:
-    """Describe every source file the index currently holds vectors for.
+async def list_indexed_documents(
+    space: Optional[VectorSpace] = None,
+) -> dict[str, IndexedDocument]:
+    """Describe every source file a vector space currently holds vectors for.
 
     Reading the whole index is what surfaces orphans — files whose vectors
     outlived the object they came from, which a storage-driven listing can
@@ -241,11 +246,14 @@ async def list_indexed_documents() -> dict[str, IndexedDocument]:
     thousand chunks costs one listing and one batched fetch rather than a
     round trip per file.
 
+    Args:
+        space: Which index and namespace to walk. Defaults to production.
+
     Returns:
-        Each indexed source key mapped to the index's record of it.
+        Each indexed source key mapped to that space's record of it.
     """
-    # Listing with no prefix walks every vector id in the index.
-    ids = await asyncio.to_thread(list_vector_ids, "")
+    # Listing with no prefix walks every vector id in the space.
+    ids = await asyncio.to_thread(list_vector_ids, "", space)
     if not ids:
         return {}
 
@@ -259,7 +267,9 @@ async def list_indexed_documents() -> dict[str, IndexedDocument]:
         first_of_document.setdefault(document_id, vector_id)
         counts[document_id] = counts.get(document_id, 0) + 1
 
-    records = await asyncio.to_thread(fetch_vectors, list(first_of_document.values()))
+    records = await asyncio.to_thread(
+        fetch_vectors, list(first_of_document.values()), space
+    )
 
     documents: dict[str, IndexedDocument] = {}
     for document_id, vector_id in first_of_document.items():

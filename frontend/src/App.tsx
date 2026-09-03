@@ -8,9 +8,10 @@
  * scores are measured against get drafted and signed off, and Prompts is the
  * wording all of it was written under. Six screens do not justify a router.
  *
- * The one piece of state that crosses screens lives here: pressing Ask on a
- * chunking variant opens Chat already pointed at it, because the alternative is
- * telling someone to switch tabs and re-select what they just clicked.
+ * Two pieces of state cross screens, and both exist for the same reason —
+ * following a link should not mean re-selecting what you just clicked. Pressing
+ * Ask on a chunking variant opens Chat pointed at it, and clicking where a file
+ * is indexed on Sources opens Chunking on that file.
  */
 
 import { useState } from 'react'
@@ -37,6 +38,8 @@ function App() {
   const [tab, setTab] = useState<Tab>('sources')
   // The variant Chat should open with, set by the Chunking tab's Ask button.
   const [askVariant, setAskVariant] = useState('')
+  // The file Chunking should open on, set by a chip on the Sources tab.
+  const [benchSource, setBenchSource] = useState('')
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -61,9 +64,17 @@ function App() {
       </nav>
 
       <main>
-        {tab === 'sources' ? <SourcesView /> : null}
+        {tab === 'sources' ? (
+          <SourcesView
+            onOpenVariant={(sourceKey) => {
+              setBenchSource(sourceKey)
+              setTab('chunking')
+            }}
+          />
+        ) : null}
         {tab === 'chunking' ? (
           <ChunkingView
+            openSource={benchSource}
             onAsk={(variantId) => {
               setAskVariant(variantId)
               setTab('chat')

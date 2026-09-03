@@ -193,13 +193,16 @@ Interactive API docs at **http://127.0.0.1:8000/docs**.
 ### 3. First pass
 
 1. Open the **Sources** tab and upload a `.txt` or `.md` file.
-2. It appears as **Not indexed**. Press **Index** on the row.
-3. Watch the progress panel move through loading → chunking → embedding →
-   writing. The row turns **Current**.
-4. Click the row to see every chunk that was stored.
-5. Go to **Chat**, ask something only that file can answer, and check the
+2. It appears as **Not indexed**, with no space holding a copy.
+3. Go to **Chunking**, pick that file and a strategy, press **Preview** — free —
+   then **Index this one**.
+4. Watch the progress panel move through loading → chunking → embedding →
+   writing, then press **Answer from this** on the variant it created.
+5. Back on **Sources** the row turns **Current** and names the space holding it.
+   Click the row to see every chunk that was stored.
+6. Go to **Chat**, ask something only that file can answer, and check the
    citations underneath.
-6. Judge the answer in the **Evaluate** panel, then find it in **Evaluations**.
+7. Judge the answer in the **Evaluate** panel, then find it in **Evaluations**.
 
 ### Checks
 
@@ -215,14 +218,23 @@ cd frontend && npm run build && npm run lint
 
 One row per file, with both sides of the pipeline next to each other: when
 storage last changed, when the embeddings were written, how many chunks exist,
-and a single verdict.
+a single verdict, and every vector space holding a copy.
+
+The verdict is about the space the app currently answers from. **Indexed in**
+lists the rest — a file can be cut four ways at once, and each copy is judged on
+its own, so one cut before the file changed reads stale while another, re-cut
+afterwards, reads current. Clicking a chip opens the Chunking bench on that
+file.
+
+Indexing does not start here. Choosing how to cut a file is what the Chunking
+screen is for, and a run started there shows up on this screen because it is the
+same queue.
 
 - **Upload** — drag several files in at once; each reports its own outcome.
 - **Replace** — swap the bytes behind a row. Its old vectors are discarded
   immediately, because chunks describing content that no longer exists are worse
   than none: they get cited with full confidence. A differently-named file
   prompts for confirmation rather than being refused.
-- **Index / Index stale** — per row, or everything that needs it.
 - **Delete** — asks which side to remove rather than assuming: the file *and* its
   embeddings, or the embeddings only. Removing only the embeddings withdraws a
   file from retrieval and leaves it re-indexable; removing both is final. Either
@@ -231,11 +243,18 @@ and a single verdict.
 
 ### Chunking
 
-Where different ways of cutting the same document get compared. Nothing on this
-screen can affect a production answer.
+Where documents get indexed, and where different ways of cutting the same
+document get compared. Indexing into one variant can never disturb another:
+each lives in its own namespace, and a query cannot cross out of one.
 
-- **The bench** — pick a file, a strategy and a geometry. It names the variant
-  it would create before anything is spent.
+- **Answering from** — the banner at the top names the space every question is
+  answered from. Production is a pointer rather than a fixed index, so the
+  winner of a comparison becomes the default answer in one click, with nothing
+  re-embedded and nothing copied. It can be pointed back at any time.
+- **The bench** — pick a file, or every readable file in the bucket, then a
+  strategy and a geometry. It names the variant it would create before anything
+  is spent. Aimed at the whole bucket it indexes only what that variant is
+  missing or holds a stale copy of.
 - **Preview** — free: the chunk count, how even the cut is, how much of it is
   repeated overlap, a bar per chunk, and the chunks themselves.
 - **Index all four** — one run, four variants, each embedded on its own terms
@@ -243,6 +262,8 @@ screen can affect a production answer.
 - **Variants** — what is embedded right now, read back from the index rather
   than a table, so it is right after a restart. A variant that holds fewer
   vectors than its run said it should is called out rather than quietly listed.
+  **Answer from this** adopts one as production; the adopted one cannot be
+  deleted until production is pointed elsewhere.
 - **Scoreboard** — a golden set put to every variant, ranked by how often each
   found the right passage, with a grid showing which question each one missed
   and what it retrieved instead.
@@ -251,7 +272,9 @@ screen can affect a production answer.
 
 - Pick a provider and model from what the backend reports as actually
   configured, rather than a hardcoded list that drifts.
-- **Answer from** picks which chunking answers; ticking **Compare with** splits
+- **Answer from** names the space answering — production, and which cut
+  production currently points at — and picks a different one; ticking
+  **Compare with** splits
   the screen into two columns that run the same question, model and prompt
   against two variants. Only two, because four columns of prose is not something
   anyone reads — four strategies ranked by hit-rate is, and that is the
@@ -562,14 +585,18 @@ Full interactive docs at `/docs`. Prose for every endpoint lives in
 | `GET` | `/chunking/strategies` | the ways a document can be cut, described for a person choosing |
 | `POST` | `/chunking/preview` | how a strategy would cut a file — nothing embedded, nothing charged |
 | `GET` | `/chunking/variants` | every variant holding vectors, read back from the index |
-| `DELETE` | `/chunking/variants/{id}` | drop a variant and its vectors; the file stays |
+| `GET` | `/chunking/production` | which space answers by default, and whether it still can |
+| `PUT` | `/chunking/production` | adopt a variant as production; `409` if it is empty or incomplete |
+| `DELETE` | `/chunking/variants/{id}` | drop a variant and its vectors; the file stays; `409` while production answers from it |
 | `POST` | `/chunking/score` | put a golden set to every variant; `202` with the run id |
 | `GET` | `/chunking/score/{id}/events` | SSE progress, ending with the ranking; `?after=` to resume |
 | `DELETE` | `/chunking/score/{id}` | stop a run, keeping what it measured |
 
 `POST /sources/index` takes a `variant` (`recursive-512-64`), which decides both
-how the file is cut and where its vectors land. `POST /chat` takes a
-`chunk_variant`, which decides where the question is searched.
+how the file is cut and where its vectors land; with no `keys` it indexes
+everything that variant is missing or holds a stale copy of. `POST /chat` takes
+a `chunk_variant`, which decides where the question is searched — and with none
+given, the question goes wherever `PUT /chunking/production` last pointed.
 
 ### Golden sets
 
@@ -653,8 +680,8 @@ under their conventional names; everything else takes an `APP_` prefix.
 | `R2_BUCKET` | `00-ai` | |
 | `APP_HOST` | `127.0.0.1` | |
 | `APP_PORT` | `8000` | |
-| `APP_PINECONE_INDEX_NAME` | `rag-index` | created on first use |
-| `APP_PINECONE_LAB_INDEX_NAME` | `rag-chunk-lab` | where chunking experiments go, one namespace per variant; created on first use |
+| `APP_PINECONE_INDEX_NAME` | `rag-index` | the original production index; only used while production points at it, and created on first write |
+| `APP_PINECONE_LAB_INDEX_NAME` | `rag-chunk-lab` | every chunking variant, one namespace each; created on first use |
 | `APP_MAX_UPLOAD_BYTES` | `10485760` | 10 MB |
 | `APP_MAX_INDEX_QUEUE` | `50` | files that may wait at once |
 | `APP_CORS_ORIGINS` | `[]` | extra exact origins |

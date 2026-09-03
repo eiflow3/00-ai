@@ -56,6 +56,7 @@ if not CONFIGURED.exists():
 from app.config import settings  # noqa: E402
 from app.schemas.source import SourceObject  # noqa: E402
 from app.services import (  # noqa: E402
+    answer_space,
     chunk_preview,
     deletion,
     embeddings as embeddings_service,
@@ -420,6 +421,12 @@ def isolated_state(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(run_store, "_connection", None)
 
+    # Which space the app answers from is stored in its own database, and a
+    # connection held open from a previous test would keep writing to that
+    # test's file — so one test's choice of production would silently decide
+    # the next one's.
+    answer_space.close()
+
     # The cached index read is a correctness hazard here rather than a saving: a
     # test asserts on what the index holds immediately after writing it.
     monkeypatch.setattr(settings, "cache_enabled", False)
@@ -431,6 +438,7 @@ def isolated_state(monkeypatch, tmp_path):
     yield
 
     index_registry.clear()
+    answer_space.close()
     if run_store._connection is not None:
         run_store._connection.close()
         run_store._connection = None

@@ -139,7 +139,49 @@ touched — the file stays, and indexing it under that variant again rebuilds it
 
 Deleting a variant that does not exist reports zero rather than failing: that
 is the state the caller asked for.
+
+Deleting the variant production answers from is refused. Point production
+somewhere else first — a delete that silently left the application with nothing
+to answer from would not be a decision anyone made.
 """
+
+PRODUCTION_DESCRIPTION = """\
+Report which vector space the application answers from.
+
+Production is a pointer, not a place. It names the namespace `/chat` reads when
+a request does not name one itself, and it is a stored setting rather than a
+fixed index — so adopting a better way of cutting your documents is a decision
+you make here, not a corpus you rebuild.
+
+An empty `variant_id` is the original production index, which is what an
+installation that has never run an experiment answers from.
+
+`state` describes the space, not the pointer: `missing` means the namespace it
+names holds no vectors any more. That is reported rather than corrected —
+quietly falling back to the original index would answer from a different corpus
+than the screen names.
+"""
+
+POINT_PRODUCTION_DESCRIPTION = """\
+Adopt one variant as the space every ungrounded question reads.
+
+The move is instantaneous and reversible: the vectors already exist, written by
+the comparison run that proved they were better, so nothing is re-embedded and
+nothing is copied. Point it back at any time.
+
+Refused in two cases, both of which would otherwise surface much later as an
+answer with holes in it rather than as a failure:
+
+* the space holds no vectors at all;
+* it holds an incomplete copy of a file, from a run that stopped partway.
+
+Send an empty `variant_id` to point back at the original production index.
+"""
+
+POINT_PRODUCTION_RESPONSES = {
+    400: {"description": "Not a variant this app can run."},
+    409: {"description": "That space cannot answer: empty, or incomplete."},
+}
 
 SCORE_DESCRIPTION = """\
 Put a golden set to every variant and count the results.

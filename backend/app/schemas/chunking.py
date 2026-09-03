@@ -202,6 +202,11 @@ class VariantState(str, Enum):
     # variant would blame the strategy for missing text.
     INTERRUPTED = "interrupted"
 
+    # Named, but holding nothing — a namespace emptied since it was chosen.
+    # Only reachable through the production pointer, which is the one place a
+    # variant is referred to by name after it has stopped existing.
+    MISSING = "missing"
+
 
 class ChunkVariant(BaseModel):
     """One strategy-and-geometry combination that has been embedded.
@@ -245,3 +250,50 @@ class VariantDeleteResponse(BaseModel):
     variant_id: str = Field(..., description="The variant that was dropped")
 
     deleted: int = Field(default=0, ge=0, description="Vectors removed")
+
+
+class ProductionSpace(BaseModel):
+    """Where the application answers questions from.
+
+    Production is a pointer, not a place: one stored variant id naming the
+    namespace `/chat` reads when a request does not name one itself.  Moving it
+    is how a comparison turns into a decision — the winner of a scoreboard run
+    becomes the default answer with nothing re-embedded and nothing copied.
+
+    An empty `variant_id` is the original production index, which is what an
+    installation that has never run an experiment answers from.
+    """
+
+    variant_id: str = Field(
+        default="",
+        description="Variant answering by default. Empty is the original index.",
+    )
+
+    label: str = Field(..., description="How it should read on screen")
+
+    state: VariantState = Field(
+        default=VariantState.READY,
+        description="Whether the space it names can actually answer",
+    )
+
+    vector_count: int = Field(default=0, ge=0, description="Vectors it holds")
+
+    source_keys: list[str] = Field(
+        default_factory=list, description="Files it can answer about"
+    )
+
+    updated_at: Optional[datetime] = Field(
+        default=None, description="When production was last pointed somewhere"
+    )
+
+
+class ProductionSpaceRequest(BaseModel):
+    """Ask that production answer from a different space."""
+
+    variant_id: str = Field(
+        default="",
+        description=(
+            "Variant to answer from, e.g. 'recursive-512-64'. Empty points "
+            "back at the original index."
+        ),
+    )

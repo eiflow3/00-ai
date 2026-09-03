@@ -34,6 +34,9 @@ package = false
 # here beats decorating each one.
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The app is not installed as a package, so the backend root has to be on the
+# path for `import app` to resolve from a bare `pytest`.
+pythonpath = ["."]
 # Quiet by default: a smoke suite is read when it fails, not when it passes.
 addopts = "-q"
 markers = [

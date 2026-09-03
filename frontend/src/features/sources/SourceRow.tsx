@@ -1,13 +1,17 @@
 /**
- * One row of the sources table: a file, its embeddings, and the verdict.
+ * One row of the sources table: a file, where its copies live, and the verdict.
  *
  * The two timestamps sit side by side because the comparison between them is
  * the whole point of the screen. A dash in either column is meaningful — no
- * embedded date means never indexed, no storage date means the file is gone.
+ * embedded date means never indexed in the answering space, no storage date
+ * means the file is gone.
+ *
+ * The verdict is about the space the app answers from; the chips beside it say
+ * which other spaces hold a copy of the same file and how each of those stands.
  */
 
 import { StateBadge } from './StateBadge'
-import { needsReindex } from './state'
+import { VariantChips } from './VariantChips'
 import { ACCEPT_ATTRIBUTE } from './uploadRules'
 import { ChunkList } from './ChunkList'
 import { SourceTables } from './SourceTables'
@@ -32,7 +36,8 @@ interface SourceRowProps {
   /** Withheld while this file cannot usefully be acted on. */
   actionsDisabled: boolean
   onToggle: () => void
-  onReindex: () => void
+  /** Open the chunking bench on this file, at the variant that was clicked. */
+  onOpenVariant: (variantId: string) => void
   /** Open the delete dialog; the view asks which side to remove. */
   onDelete: () => void
   /** Hand the chosen file up; the view decides whether to confirm first. */
@@ -55,7 +60,7 @@ export function SourceRow({
   queued,
   actionsDisabled,
   onToggle,
-  onReindex,
+  onOpenVariant,
   onDelete,
   onReplace,
 }: SourceRowProps) {
@@ -63,11 +68,6 @@ export function SourceRow({
   const { source, indexed, state } = status
   const accent = ROW_ACCENT[state] ?? 'border-l-transparent'
 
-  // Only a file that still exists in storage can be indexed; an orphan's
-  // resolution is deleting its vectors instead.
-  // A run already embedding this file makes a second request pointless: the
-  // server would refuse it anyway rather than let two runs interleave.
-  const canReindex = source !== null && needsReindex(state) && !busy
   // Every row has something to delete — a file, vectors, or both — so the
   // choice of which belongs in the dialog rather than in whether it opens.
   const canDelete = !busy
@@ -114,6 +114,11 @@ export function SourceRow({
           <StateBadge state={state} detail={status.detail} />
         </td>
 
+        {/* Every space holding a copy, including the one answering. */}
+        <td className="px-3 py-3">
+          <VariantChips variants={status.variants} onOpen={onOpenVariant} />
+        </td>
+
         <td className="py-3 pr-4 pl-3 text-right whitespace-nowrap">
           {canReplace ? (
             <>
@@ -151,15 +156,6 @@ export function SourceRow({
             >
               Queued
             </span>
-          ) : canReindex ? (
-            <button
-              type="button"
-              onClick={onReindex}
-              disabled={actionsDisabled}
-              className="rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-            >
-              Index
-            </button>
           ) : null}
           {canDelete ? (
             <button
@@ -176,7 +172,7 @@ export function SourceRow({
 
       {expanded ? (
         <tr>
-          <td colSpan={6} className="bg-slate-50/60 p-0">
+          <td colSpan={7} className="bg-slate-50/60 p-0">
             <div className="border-y border-slate-100">
               {/* The provenance that links the two sides, shown verbatim. */}
               {indexed ? (

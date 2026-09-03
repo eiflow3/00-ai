@@ -180,6 +180,17 @@ class Settings(BaseSettings):
         return self.data_dir / "golden.db"
 
     @property
+    def answering_store_path(self) -> Path:
+        """SQLite file holding which vector space the app answers from.
+
+        A fifth file, for the same reason as the third and fourth: it is
+        configuration, not history.  One row decides where every ungrounded
+        question gets its context, so a retention sweep that removed it would
+        silently move the application back to a different corpus.
+        """
+        return self.data_dir / "answering.db"
+
+    @property
     def log_path(self) -> Path:
         """Rotating log file for the backend."""
         return self.data_dir / "logs" / "backend.log"

@@ -119,11 +119,49 @@ class IndexedDocument(BaseModel):
     )
 
 
+class SourceVariant(BaseModel):
+    """One vector space that holds a copy of a file, and how that copy stands.
+
+    A file can be cut several ways at once, each cut living in its own
+    namespace, so "is this file indexed" has as many answers as there are
+    variants.  Each of these is one of those answers.
+
+    The state is computed the same way the file's overall state is, against
+    that namespace's own record — so a copy embedded before the file changed
+    reads as stale even while another copy, re-cut afterwards, reads as
+    current.
+    """
+
+    variant_id: str = Field(
+        default="", description="Variant holding this copy. Empty is the original index."
+    )
+
+    label: str = Field(..., description="How it should read on screen")
+
+    state: IndexState = Field(..., description="Where this copy stands versus the file")
+
+    chunk_count: int = Field(default=0, ge=0, description="Vectors this copy holds")
+
+    embedded_at: Optional[datetime] = Field(
+        default=None, description="When this copy was written"
+    )
+
+    # Whether this is the space the application currently answers from. One
+    # variant at most, and it is what makes "which of these am I talking to"
+    # answerable without leaving the screen.
+    active: bool = Field(
+        default=False, description="True when production answers from this space"
+    )
+
+
 class SourceStatus(BaseModel):
     """One source file, joined with its embeddings.
 
     The row behind the client's file list: both timestamps side by side, and a
     single verdict saying whether the embeddings need rebuilding.
+
+    The verdict is about the space production currently answers from, while
+    `variants` lists every space holding a copy — including that one.
     """
 
     # The object key. Present whether or not the file still exists in storage.
@@ -158,6 +196,13 @@ class SourceStatus(BaseModel):
     # row that says "indexing" when nothing is happening to it yet is a lie.
     queued: bool = Field(
         default=False, description="True while the file waits its turn in the queue"
+    )
+
+    # Every vector space holding a copy of this file, newest first. Read back
+    # from the index rather than from a job record, so a namespace deleted on a
+    # console stops being listed here on the next request.
+    variants: list[SourceVariant] = Field(
+        default_factory=list, description="Vector spaces holding a copy of this file"
     )
 
     @property

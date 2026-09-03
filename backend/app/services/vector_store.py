@@ -13,6 +13,7 @@ remember to apply.  Omitting the argument means the production space, so the
 pipeline behaves exactly as it did before namespaces existed.
 """
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -90,21 +91,35 @@ class PineconeManager:
     Index handles are cached per index name rather than singly: resolving one
     costs a round trip to look up its host, and that answer cannot change while
     the process lives.
+
+    Every method here can be reached from a worker thread — the SDK is
+    synchronous, so each call is handed to one — and several run at once
+    whenever a request reads two spaces in parallel. So construction is locked,
+    and the instance is published only once it is fully built: a half-built
+    singleton left visible to a second thread is a crash that happens under
+    concurrency and never in a test written for one thread.
     """
     _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(PineconeManager, cls).__new__(cls)
-            # Initialize the connection lazily
-            # This avoids crashing on app startup if env vars are missing
-            cls._instance.pc = Pinecone(api_key=settings.pinecone_api_key)
-            # Handles are built on first use, not here: resolving one requires
-            # the index to exist, and on a fresh account it does not until
-            # ensure_index() has run.
-            cls._instance.indexes = {}
-            # Handles for read-only probes, which must never provision.
-            cls._instance.probe_indexes = {}
+            with cls._lock:
+                # Re-checked inside the lock: another thread may have finished
+                # building it while this one waited.
+                if cls._instance is None:
+                    instance = super(PineconeManager, cls).__new__(cls)
+                    # Initialize the connection lazily
+                    # This avoids crashing on app startup if env vars are missing
+                    instance.pc = Pinecone(api_key=settings.pinecone_api_key)
+                    # Handles are built on first use, not here: resolving one
+                    # requires the index to exist, and on a fresh account it
+                    # does not until ensure_index() has run.
+                    instance.indexes = {}
+                    # Handles for read-only probes, which must never provision.
+                    instance.probe_indexes = {}
+                    # Published last, so no thread can observe it half-built.
+                    cls._instance = instance
         return cls._instance
 
     @classmethod
@@ -119,10 +134,11 @@ class PineconeManager:
         """
         name = index_name or settings.pinecone_index_name
         instance = cls()
-        if name not in instance.indexes:
-            ensure_index(name)
-            instance.indexes[name] = instance.pc.Index(name)
-        return instance.indexes[name]
+        with cls._lock:
+            if name not in instance.indexes:
+                ensure_index(name)
+                instance.indexes[name] = instance.pc.Index(name)
+            return instance.indexes[name]
 
     @classmethod
     def get_probe_index(cls, index_name: str = ""):
@@ -143,9 +159,10 @@ class PineconeManager:
         """
         name = index_name or settings.pinecone_index_name
         instance = cls()
-        if name not in instance.probe_indexes:
-            instance.probe_indexes[name] = instance.pc.Index(name)
-        return instance.probe_indexes[name]
+        with cls._lock:
+            if name not in instance.probe_indexes:
+                instance.probe_indexes[name] = instance.pc.Index(name)
+            return instance.probe_indexes[name]
 
     @classmethod
     def get_client(cls):
@@ -255,7 +272,15 @@ def query_similar(
         and metadata. Normalised here so callers never touch the SDK's types.
     """
     target = _resolve(space)
-    index = PineconeManager.get_index(target.index_name)
+
+    try:
+        index = PineconeManager.get_probe_index(target.index_name)
+    except NotFoundException:
+        # No index means no context. Reported as an empty result so the caller
+        # answers ungrounded and says so, rather than failing the request from
+        # inside a stream that has already started.
+        return []
+
     result = index.query(
         vector=query_embedding,
         top_k=top_k,
@@ -281,15 +306,25 @@ def list_vector_ids(prefix: str, space: Optional[VectorSpace] = None) -> list[st
         Every matching vector id, in the order the index returns them.
     """
     target = _resolve(space)
-    index = PineconeManager.get_index(target.index_name)
 
-    ids: list[str] = []
-    # .list() pages internally and yields one batch per iteration. Depending on
-    # the SDK version a batch holds plain ids or ListItem objects, so normalise
-    # to strings rather than letting the difference leak to callers.
-    for batch in index.list(prefix=prefix, namespace=target.namespace):
-        ids.extend(str(getattr(item, "id", item)) for item in batch)
-    return ids
+    # A probe rather than the provisioning handle: this is a read, and a read
+    # that brings an index into existence as a side effect of being asked is a
+    # surprise nobody wants — including the one that would resurrect an index
+    # somebody had just deleted.
+    try:
+        index = PineconeManager.get_probe_index(target.index_name)
+
+        ids: list[str] = []
+        # .list() pages internally and yields one batch per iteration. Depending
+        # on the SDK version a batch holds plain ids or ListItem objects, so
+        # normalise to strings rather than letting the difference leak out.
+        for batch in index.list(prefix=prefix, namespace=target.namespace):
+            ids.extend(str(getattr(item, "id", item)) for item in batch)
+        return ids
+    except NotFoundException:
+        # An index that does not exist holds no vectors. A valid state on a
+        # fresh account, and after an index is retired.
+        return []
 
 
 def to_plain_dict(record) -> dict:
@@ -328,7 +363,12 @@ def fetch_vectors(
         return {}
 
     target = _resolve(space)
-    index = PineconeManager.get_index(target.index_name)
+
+    try:
+        index = PineconeManager.get_probe_index(target.index_name)
+    except NotFoundException:
+        # Nothing to read from an index that is not there.
+        return {}
 
     records: dict[str, dict] = {}
     for start in range(0, len(ids), FETCH_BATCH_SIZE):
@@ -358,7 +398,13 @@ def delete_vectors(ids: list[str], space: Optional[VectorSpace] = None) -> int:
         return 0
 
     target = _resolve(space)
-    index = PineconeManager.get_index(target.index_name)
+
+    try:
+        # A probe here too: creating an index in order to delete from it would
+        # leave behind exactly what the caller was trying to get rid of.
+        index = PineconeManager.get_probe_index(target.index_name)
+    except NotFoundException:
+        return 0
 
     for start in range(0, len(ids), DELETE_BATCH_SIZE):
         index.delete(
@@ -388,11 +434,12 @@ def delete_namespace(space: VectorSpace) -> None:
             "every vector in the index rather than one experiment's."
         )
 
-    index = PineconeManager.get_index(space.index_name)
     try:
+        index = PineconeManager.get_probe_index(space.index_name)
         index.delete(delete_all=True, namespace=space.namespace)
     except NotFoundException:
-        # Already gone, which is the state the caller asked for.
+        # Already gone — namespace or index — which is the state the caller
+        # asked for. Provisioning an index in order to empty it would not be.
         pass
 
 

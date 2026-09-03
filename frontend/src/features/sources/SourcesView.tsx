@@ -4,14 +4,19 @@
  * This is the answer to "the file changed, but did its embeddings?" — the two
  * timestamps are columns of the same row, and the state column says which way
  * the comparison came out.
+ *
+ * Indexing is not started from here. A file can be cut several ways, each into
+ * its own vector space, and choosing between them is what the Chunking screen
+ * is for — so this screen owns the file (upload, replace, delete) and reports
+ * where its copies live, while the decision of how to cut one lives next door.
+ * A run started there still shows here, because it is the same queue.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { IndexProgress } from './IndexProgress'
 import { SourceRow } from './SourceRow'
 import { UploadPanel } from './UploadPanel'
-import { needsReindex } from './state'
 import { basename } from './uploadRules'
 import { deindexSource, deleteSource, replaceSource } from '../../api/client'
 import type { IndexState, SourceStatus } from '../../api/types'
@@ -45,7 +50,12 @@ interface PendingReplace {
   file: File
 }
 
-export function SourcesView() {
+interface SourcesViewProps {
+  /** Open the Chunking bench on this file and variant. */
+  onOpenVariant: (sourceKey: string, variantId: string) => void
+}
+
+export function SourcesView({ onOpenVariant }: SourcesViewProps) {
   const [filter, setFilter] = useState<IndexState | 'all'>('all')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pending, setPending] = useState<PendingReplace | null>(null)
@@ -77,15 +87,6 @@ export function SourcesView() {
     const timer = setInterval(refresh, INDEXING_POLL_MS)
     return () => clearInterval(timer)
   }, [watching, refresh])
-
-  // Files worth indexing: stale, and not already queued or being embedded.
-  const staleCount = useMemo(
-    () =>
-      sources.filter(
-        (status) => needsReindex(status.state) && !status.indexing && !status.queued,
-      ).length,
-    [sources],
-  )
 
   const toggle = useCallback((sourceKey: string) => {
     setExpanded((current) => (current === sourceKey ? null : sourceKey))
@@ -151,7 +152,8 @@ export function SourcesView() {
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Sources</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Files in object storage, next to what the vector index holds for them.
+            Files in object storage, next to every vector space holding a copy.
+            Cut and index them on the Chunking screen.
           </p>
         </div>
 
@@ -163,14 +165,6 @@ export function SourcesView() {
             className="rounded-md border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
           >
             Refresh
-          </button>
-          <button
-            type="button"
-            onClick={() => void run.enqueue({ only_stale: true })}
-            disabled={staleCount === 0}
-            className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-30"
-          >
-            Index {staleCount > 0 ? `${staleCount} ` : ''}stale
           </button>
         </div>
       </header>
@@ -249,6 +243,7 @@ export function SourcesView() {
                 <th className="px-3 py-2.5">Embedded</th>
                 <th className="px-3 py-2.5 text-right">Chunks</th>
                 <th className="px-3 py-2.5">State</th>
+                <th className="px-3 py-2.5">Indexed in</th>
                 <th className="py-2.5 pr-4 pl-3" />
               </tr>
             </thead>
@@ -266,7 +261,9 @@ export function SourcesView() {
                   // when the pipeline is actually holding that file.
                   actionsDisabled={false}
                   onToggle={() => toggle(status.source_key)}
-                  onReindex={() => void run.enqueue({ keys: [status.source_key] })}
+                  onOpenVariant={(variantId) =>
+                    onOpenVariant(status.source_key, variantId)
+                  }
                   onDelete={() => setDeleting(status)}
                   onReplace={(file) => handleReplace(status.source_key, file)}
                 />

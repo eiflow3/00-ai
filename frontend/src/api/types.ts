@@ -60,6 +60,25 @@ export interface IndexedDocument {
   embedding_model: string
 }
 
+/**
+ * One vector space holding a copy of a file.
+ *
+ * A file can be cut several ways at once, each cut in its own namespace, so
+ * "is this indexed" has one answer per space. Each copy is judged on its own
+ * terms — one embedded before the file changed reads stale while another,
+ * re-cut afterwards, reads current.
+ */
+export interface SourceVariant {
+  /** Empty is the original production index. */
+  variant_id: string
+  label: string
+  state: IndexState
+  chunk_count: number
+  embedded_at: string | null
+  /** True when this is the space the app currently answers from. */
+  active: boolean
+}
+
 /** One file joined with its embeddings — a row in the sources table. */
 export interface SourceStatus {
   source_key: string
@@ -84,6 +103,13 @@ export interface SourceStatus {
    * starts happening to it. Showing "Indexing" during that wait would be a lie.
    */
   queued: boolean
+  /**
+   * Every vector space holding a copy of this file, newest copy first.
+   *
+   * Read back from the indexes rather than remembered, so a namespace deleted
+   * on a console stops appearing on the next request.
+   */
+  variants: SourceVariant[]
 }
 
 /** One indexed chunk, as stored in the vector index. */
@@ -991,7 +1017,7 @@ export interface ChunkPreviewResponse {
 }
 
 /** Whether a variant holds every vector its last run said it should. */
-export type VariantState = 'ready' | 'interrupted'
+export type VariantState = 'ready' | 'interrupted' | 'missing'
 
 /** One strategy-and-geometry combination that has been embedded. */
 export interface ChunkVariant {
@@ -1010,6 +1036,24 @@ export interface ChunkVariant {
 export interface VariantDeleteResponse {
   variant_id: string
   deleted: number
+}
+
+/**
+ * Where the app answers questions from.
+ *
+ * Production is a pointer rather than a place: one stored variant id naming the
+ * namespace `/chat` reads when a request names none itself. Moving it adopts a
+ * different way of cutting the documents with nothing re-embedded.
+ */
+export interface ProductionSpace {
+  /** Empty is the original production index. */
+  variant_id: string
+  label: string
+  /** `missing` means the namespace it names holds no vectors any more. */
+  state: VariantState
+  vector_count: number
+  source_keys: string[]
+  updated_at: string | null
 }
 
 // --- Chunking: scoring one variant against a golden set ---------------------

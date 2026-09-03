@@ -7,6 +7,12 @@ It joins two independent listings on the source key — the object store's view
 of what exists, and the vector index's view of what was embedded — and reduces
 each pair to a single verdict a client can render without reimplementing any
 of the comparison rules.
+
+There is more than one index side now.  A file can be cut several ways at once,
+each cut living in its own namespace, so every row carries a verdict *per
+space* as well as one headline verdict.  The headline is measured against
+whichever space production currently answers from — anything else would report
+a file as unindexed while every answer on the chat screen was grounded in it.
 """
 
 import asyncio
@@ -19,8 +25,15 @@ from app.schemas.source import (
     SourceDetail,
     SourceObject,
     SourceStatus,
+    SourceVariant,
 )
-from app.services import index_catalog, index_registry, source_cache
+from app.services import (
+    answer_space,
+    chunk_variants,
+    index_catalog,
+    index_registry,
+    source_cache,
+)
 from app.services.object_store import head_object, list_objects
 from app.services.provenance import DERIVED_PREFIX
 from app.services.text_extraction import is_supported
@@ -108,14 +121,17 @@ def build_status(
     indexed: Optional[IndexedDocument],
     embedding_model: str,
     source_key: str = "",
+    variants: Optional[list[SourceVariant]] = None,
 ) -> SourceStatus:
     """Assemble one file's status row from both sides of the pipeline.
 
     Args:
         source: The object as it exists in storage, if it still does.
-        indexed: What the index holds for it, if anything.
+        indexed: What the answering space holds for it, if anything.
         embedding_model: The model currently configured.
         source_key: Key to report when the object is gone; ignored otherwise.
+        variants: Every space holding a copy of this file, if they have been
+            read. Omitted where a caller only needs the headline verdict.
 
     Returns:
         The joined status, carrying both records and the verdict.
@@ -135,6 +151,7 @@ def build_status(
         # waiting in the queue is not the same as being worked on.
         indexing=index_registry.is_indexing(key),
         queued=index_registry.is_queued(key),
+        variants=variants or [],
     )
 
 
@@ -147,9 +164,13 @@ async def get_status(source_key: str) -> SourceStatus:
     Returns:
         The joined status for that file.
     """
+    space = chunk_variants.space_for(await answer_space.current())
+
     # Both lookups are independent network calls, so run them together.
     source_task = asyncio.create_task(_head_or_none(source_key))
-    indexed_task = asyncio.create_task(index_catalog.get_indexed_document(source_key))
+    indexed_task = asyncio.create_task(
+        index_catalog.get_indexed_document(source_key, space)
+    )
 
     source, indexed = await asyncio.gather(source_task, indexed_task)
 
@@ -179,17 +200,31 @@ async def get_detail(source_key: str, refresh: bool = False) -> SourceDetail:
     Returns:
         The file's status and its indexed chunks, in document order.
     """
-    source, (indexed, chunks) = await asyncio.gather(
+    active = await answer_space.current()
+    space = chunk_variants.space_for(active)
+
+    source, (indexed, chunks), copies = await asyncio.gather(
         _head_or_none(source_key),
-        source_cache.load_detail(source_key, refresh=refresh),
+        source_cache.load_detail(source_key, space, refresh=refresh),
+        source_cache.load_copies(refresh=refresh),
     )
 
-    status = build_status(source, indexed, settings.embedding_model, source_key)
+    status = build_status(
+        source,
+        indexed,
+        settings.embedding_model,
+        source_key,
+        variants=_copies_of(source_key, source, copies, active),
+    )
 
     return SourceDetail(status=status, chunks=chunks)
 
 
-async def list_statuses(prefix: str = "", refresh: bool = False) -> list[SourceStatus]:
+async def list_statuses(
+    prefix: str = "",
+    refresh: bool = False,
+    variant: Optional[str] = None,
+) -> list[SourceStatus]:
     """List every source file, joined with its embeddings.
 
     Both sides are enumerated rather than just storage, so a file whose
@@ -203,14 +238,22 @@ async def list_statuses(prefix: str = "", refresh: bool = False) -> list[SourceS
     Args:
         prefix: Restrict the listing to keys beginning with this prefix.
         refresh: Re-read the index rather than using what is cached.
+        variant: Judge each file against this space instead of the one
+            production answers from. What an indexing run passes, so a run
+            aimed at one variant is not told a file is up to date on the
+            strength of another variant's copy.
 
     Returns:
         One status per file, newest change first, orphans last.
     """
-    objects, documents = await asyncio.gather(
+    target = await answer_space.current() if variant is None else variant
+
+    objects, copies = await asyncio.gather(
         list_objects(prefix),
-        source_cache.load_documents(refresh=refresh),
+        source_cache.load_copies(refresh=refresh),
     )
+
+    documents = copies.get(target, {})
 
     # Derived artifacts share the bucket but are the pipeline's own plumbing —
     # extraction results, not sources. Listing them would offer to index them.
@@ -220,33 +263,103 @@ async def list_statuses(prefix: str = "", refresh: bool = False) -> list[SourceS
 
     stored_keys = {source.key for source in objects}
 
-    # Keys the index holds but storage no longer has — the orphans.
+    # Keys some space holds but storage no longer has — the orphans. Taken
+    # across every space rather than the answering one: a file deleted from the
+    # bucket while a variant still holds its chunks is exactly as orphaned as
+    # one production still holds, and dropping it from the listing would leave
+    # the only way to notice on a provider console.
+    held_keys = {key for held in copies.values() for key in held}
     orphan_keys = sorted(
         key
-        for key in documents.keys() - stored_keys
+        for key in held_keys - stored_keys
         if not prefix or key.startswith(prefix)
     )
 
     # Storage side first, preserving the newest-change-first order the store
     # returned; orphans trail behind since they have no place in that order.
     statuses = [
-        build_status(source, documents.get(source.key), settings.embedding_model)
+        build_status(
+            source,
+            documents.get(source.key),
+            settings.embedding_model,
+            variants=_copies_of(source.key, source, copies, target),
+        )
         for source in objects
     ]
     statuses.extend(
-        build_status(None, documents.get(key), settings.embedding_model, key)
+        build_status(
+            None,
+            documents.get(key),
+            settings.embedding_model,
+            key,
+            variants=_copies_of(key, None, copies, target),
+        )
         for key in orphan_keys
     )
 
     return statuses
 
 
-async def list_reindexable(prefix: str = "", only_stale: bool = True) -> list[SourceStatus]:
+def _copies_of(
+    source_key: str,
+    source: Optional[SourceObject],
+    copies: dict[str, dict[str, IndexedDocument]],
+    active: str,
+) -> list[SourceVariant]:
+    """Describe every space holding a copy of one file.
+
+    Each copy is judged on its own terms, by the same rules that decide the
+    headline verdict — so a namespace embedded before the file changed reads as
+    stale while one re-cut afterwards reads as current. A single verdict shared
+    across all of them would invite scoring a strategy on text that no longer
+    exists.
+
+    Args:
+        source_key: The file in question.
+        source: The object as storage has it, or None when it is gone.
+        copies: Every space's records, keyed by variant id.
+        active: The variant production answers from.
+
+    Returns:
+        One entry per space holding the file, newest copy first.
+    """
+    held = [
+        (variant, documents[source_key])
+        for variant, documents in copies.items()
+        if source_key in documents
+    ]
+
+    described = [
+        SourceVariant(
+            variant_id=variant,
+            label=answer_space.label_for(variant),
+            state=_compare(source, document, settings.embedding_model)[0],
+            chunk_count=document.chunk_count,
+            embedded_at=document.embedded_at,
+            active=variant == active,
+        )
+        for variant, document in held
+    ]
+
+    described.sort(
+        key=lambda copy: (copy.embedded_at is None, copy.embedded_at), reverse=True
+    )
+    return described
+
+
+async def list_reindexable(
+    prefix: str = "",
+    only_stale: bool = True,
+    variant: str = chunk_variants.PRODUCTION_VARIANT,
+) -> list[SourceStatus]:
     """List the files an indexing run should process.
 
     Args:
         prefix: Restrict to keys beginning with this prefix.
         only_stale: Skip files whose embeddings are already up to date.
+        variant: The space the run will write to. Staleness is judged against
+            that space and no other — a run aimed at one variant must not skip
+            a file because a different variant already holds a current copy.
 
     Returns:
         The files to index, skipping orphans and unreadable file types, which
@@ -256,7 +369,7 @@ async def list_reindexable(prefix: str = "", only_stale: bool = True) -> list[So
     # spend money embedding, and it runs once per run rather than once per page
     # load — so it can afford the fresh read, and should not risk paying to
     # re-embed a file on the strength of a cached verdict.
-    statuses = await list_statuses(prefix, refresh=True)
+    statuses = await list_statuses(prefix, refresh=True, variant=variant)
 
     return [
         status

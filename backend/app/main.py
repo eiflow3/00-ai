@@ -18,7 +18,14 @@ from app.routers.golden import router as golden_router
 from app.routers.prompts import router as prompts_router
 from app.routers.sources import router as sources_router
 from app.routers.traces import router as traces_router
-from app.services import cache, golden_db, prompt_db, run_store, trace_db
+from app.services import (
+    answer_space,
+    cache,
+    golden_db,
+    prompt_db,
+    run_store,
+    trace_db,
+)
 
 # Installed before anything else logs, so no module's first line is swallowed.
 logging_config.configure()
@@ -46,11 +53,25 @@ async def lifespan(_: FastAPI):
     reason: a golden set is the answer key past eval scores were measured
     against, so expiring one would retroactively remove the meaning of results
     someone is still quoting.
+
+    Which space the app answers from is read at the end and logged, because it
+    is a setting now rather than a fixed index: a process that came up pointed
+    somewhere unexpected should say so in its first few lines rather than in a
+    surprising answer later.
     """
     await run_store.initialise()
     await trace_db.initialise()
     await prompt_db.initialise()
     await golden_db.initialise()
+
+    answering = await answer_space.describe()
+    logger.info(
+        "answering from %s (%d vector(s), %s)",
+        answering.label,
+        answering.vector_count,
+        answering.state.value,
+    )
+
     # Deliberately no host or port: uvicorn may have been given different ones
     # on the command line, and a startup line naming the wrong address is worse
     # than one naming none.
@@ -61,6 +82,7 @@ async def lifespan(_: FastAPI):
     # depends on it surviving, but a connection left open logs a warning on the
     # way out that reads like a fault.
     await cache.close()
+    answer_space.close()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

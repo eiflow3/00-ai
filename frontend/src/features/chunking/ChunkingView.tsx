@@ -6,23 +6,26 @@
  * into its own space. See what exists. Then score every variant against a
  * golden set, which is the only step that actually answers the question.
  *
- * Nothing here can affect a production answer. Every variant's vectors live in
- * their own namespace in a separate index, so a query against one cannot return
- * another's chunks and the index the app normally answers from is never
- * written to.
+ * Every variant's vectors live in their own namespace, so a query against one
+ * cannot return another's chunks — indexing here can never disturb an existing
+ * copy of a document. What it can change is which copy answers: production is a
+ * pointer, and adopting the winner of a comparison is a setting rather than a
+ * corpus rebuild. The banner at the top always says where that pointer is.
  */
 
 import { useCallback, useState } from 'react'
 
 import { PreviewPanel } from './PreviewPanel'
+import { ProductionBanner } from './ProductionBanner'
 import { Scoreboard } from './Scoreboard'
-import { StrategyBench } from './StrategyBench'
+import { ALL_FILES, StrategyBench } from './StrategyBench'
 import { VariantsTable } from './VariantsTable'
 import type { ChunkStrategy, ChunkVariant } from '../../api/types'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useChunkPreview } from '../../hooks/useChunkPreview'
 import { useGoldenSets } from '../../hooks/useGoldenSets'
 import { useIndexRun } from '../../hooks/useIndexRun'
+import { useProduction } from '../../hooks/useProduction'
 import { useSources } from '../../hooks/useSources'
 import { useVariantScore } from '../../hooks/useVariantScore'
 import { useVariants } from '../../hooks/useVariants'
@@ -35,9 +38,11 @@ const DEFAULT_CHUNK_OVERLAP = 64
 interface ChunkingViewProps {
   /** Opens the chat screen with this variant already selected. */
   onAsk: (variantId: string) => void
+  /** A file the Sources screen sent over, to open the bench on. */
+  openSource?: string
 }
 
-export function ChunkingView({ onAsk }: ChunkingViewProps) {
+export function ChunkingView({ onAsk, openSource = '' }: ChunkingViewProps) {
   // Both of these are "the person's pick, or the obvious default" — derived
   // during render rather than written by an effect, so the default falls into
   // place as soon as the lists arrive and a pick always wins over it.
@@ -52,17 +57,27 @@ export function ChunkingView({ onAsk }: ChunkingViewProps) {
   const variants = useVariants()
   const golden = useGoldenSets()
   const score = useVariantScore()
+  const production = useProduction()
 
   // A finished run has written new vectors, and the variants list is read from
   // the index — so it is only right again once the run has ended.
-  const onSettled = useCallback(() => variants.refresh(), [variants])
+  const onSettled = useCallback(() => {
+    variants.refresh()
+    // A run writes vectors, and the banner reports how many the answering
+    // space holds — so it is only right again once the run has ended.
+    production.refresh()
+  }, [production, variants])
   const run = useIndexRun(onSettled)
 
-  // One file in the bucket means one obvious choice; making somebody pick from
-  // a list of one is a step that teaches them nothing.
+  // A pick wins, then whatever the Sources screen sent over, then the one
+  // obvious choice — making somebody pick from a list of one teaches nothing.
   const sourceKey =
     pickedSource ??
-    (sources.sources.length === 1 ? sources.sources[0].source_key : '')
+    (openSource !== ''
+      ? openSource
+      : sources.sources.length === 1
+        ? sources.sources[0].source_key
+        : '')
 
   const strategy = pickedStrategy ?? preview.strategies[0]?.id ?? null
 
@@ -75,13 +90,26 @@ export function ChunkingView({ onAsk }: ChunkingViewProps) {
     })
   }, [chunkOverlap, chunkSize, preview, sourceKey, strategy])
 
+  /**
+   * Name the files a run should cover.
+   *
+   * The whole bucket is sent as *no* keys rather than as every key: with none
+   * named the server compares storage against the target variant and picks
+   * what is missing or stale there, which is the sweep the Sources screen used
+   * to own — and it skips paying to re-embed what that variant already holds.
+   */
+  const filesFor = useCallback(
+    (key: string) => (key === ALL_FILES ? {} : { keys: [key] }),
+    [],
+  )
+
   const handleIndex = useCallback(() => {
     if (sourceKey === '' || strategy === null) return
     void run.enqueue({
-      keys: [sourceKey],
+      ...filesFor(sourceKey),
       variant: `${strategy}-${chunkSize}-${chunkOverlap}`,
     })
-  }, [chunkOverlap, chunkSize, run, sourceKey, strategy])
+  }, [chunkOverlap, chunkSize, filesFor, run, sourceKey, strategy])
 
   /**
    * Queue the same file under every strategy.
@@ -94,11 +122,11 @@ export function ChunkingView({ onAsk }: ChunkingViewProps) {
     if (sourceKey === '') return
     for (const spec of preview.strategies) {
       void run.enqueue({
-        keys: [sourceKey],
+        ...filesFor(sourceKey),
         variant: `${spec.id}-${chunkSize}-${chunkOverlap}`,
       })
     }
-  }, [chunkOverlap, chunkSize, preview.strategies, run, sourceKey])
+  }, [chunkOverlap, chunkSize, filesFor, preview.strategies, run, sourceKey])
 
   const handleScore = useCallback(
     (setId: string, topK: number, generate: boolean) => {
@@ -125,6 +153,13 @@ export function ChunkingView({ onAsk }: ChunkingViewProps) {
           Refresh
         </button>
       </header>
+
+      <ProductionBanner
+        production={production.production}
+        loading={production.loading}
+        error={production.error}
+        onReset={() => void production.pointAt('')}
+      />
 
       <StrategyBench
         sources={sources.sources}
@@ -178,13 +213,16 @@ export function ChunkingView({ onAsk }: ChunkingViewProps) {
         variants={variants.variants}
         loading={variants.loading}
         deleting={variants.deleting}
+        active={production.production?.variant_id ?? null}
+        pointing={production.pointing}
         onAsk={onAsk}
+        onAdopt={(variantId) => void production.pointAt(variantId)}
         onDelete={setDeleting}
       />
 
       <Scoreboard
         sets={golden.sets}
-        sourceKey={sourceKey}
+        sourceKey={sourceKey === ALL_FILES ? '' : sourceKey}
         run={score}
         onScore={handleScore}
       />

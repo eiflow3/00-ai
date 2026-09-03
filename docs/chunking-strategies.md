@@ -6,8 +6,9 @@ feature: the four strategies, what a *variant* is, where a variant's vectors
 live, how the comparison is scored, and what it costs.
 
 The short version: **a variant is a strategy plus its geometry, its vectors live
-in their own namespace in a separate index, and which variant is better is
-decided by putting a golden set to all of them and counting.**
+in a namespace of their own, which variant is better is decided by putting a
+golden set to all of them and counting — and the winner becomes the app's
+default answer by pointing production at it, with nothing re-embedded.**
 
 The mechanics of the default cut — token measurement, the boundary search, the
 offset arithmetic — are in [chunking.md](chunking.md). This document is about
@@ -71,26 +72,23 @@ about them.
 
 ## 3. Where a variant's vectors live
 
-In its own **namespace**, inside a **separate index** from the one the app
-answers from.
+In its own **namespace**, one per variant.
 
 ```
-rag-index                     production — what /chat answers from by default
 rag-chunk-lab
   ├── boundary-512-64         one namespace per variant
   ├── fixed-512-64
-  ├── recursive-512-64
+  ├── recursive-512-64   ←    production points here
   └── structural-512-64
 ```
 
-Two properties follow, and both are the point:
+The property that matters: **a query cannot cross a namespace.** The isolation
+is the vector store's, not a metadata filter every call site has to remember to
+apply, so comparing two variants is comparing two closed sets of vectors — and
+indexing one can never disturb another.
 
-- **A query cannot cross a namespace.** The isolation is the vector store's,
-  not a metadata filter every call site has to remember to apply. Comparing two
-  variants is therefore comparing two closed sets of vectors.
-- **Production cannot be affected.** An index boundary is the only guarantee
-  that a chunking experiment can never turn up in a real answer, and it does
-  not depend on anything being filtered correctly.
+There used to be a second index, `rag-index`, holding what the app answered
+from. It has been retired; see §3.2.
 
 ### 3.1 Why not one index per strategy
 
@@ -102,6 +100,40 @@ no such limit.
 
 The mapping lives in `space_for` alone, so pinning one variant to an index of
 its own is a change there and nowhere else.
+
+### 3.2 Production is a pointer, not a place
+
+Production used to be its own index, written only from the Sources screen. That
+made "which way of cutting these documents answers best" a question you could
+measure but not act on: adopting the winner meant re-embedding the corpus into
+the production index and trusting the copy.
+
+So production is now a **stored variant id** naming the namespace that answers
+when a request names none itself. `services/answer_space.py` owns it, in a
+database of its own — it is configuration, like an edited prompt, and a pointer
+that reset on restart would move every subsequent answer with nothing recording
+that it had.
+
+Moving it is instantaneous and reversible, because the vectors already exist:
+they were written by the comparison run that proved they were better.
+
+Three rules keep it safe to move:
+
+- **Only at something that can answer.** An empty namespace, a half-embedded
+  one, or an id no strategy can reproduce is refused at the moment of pointing
+  — the alternative is discovering it in an ungrounded answer an hour later.
+- **Never corrected silently.** A namespace emptied afterwards leaves the
+  pointer where it is and reports `missing`. Falling back to somewhere else
+  would answer from a different corpus than the screen names.
+- **Reads never provision.** Every read path uses the probing index handle, so
+  asking about an index that no longer exists comes back empty instead of
+  bringing it back into existence.
+
+What this trades away is the old blast-radius argument: a lab bug could not
+write into an index it never opened, and production is now one namespace among
+the rest. What protects it instead is that **writes must name their target** —
+`space_for` refuses an id it cannot parse rather than creating a namespace for
+it, and no screen writes to production implicitly.
 
 Only four things genuinely require a separate index — a different embedding
 width, a different metric, a different region, or a tenant large enough to need
@@ -385,7 +417,12 @@ being compared, meaningless.
 
 One tab, in the order the work happens.
 
-1. **The bench** — pick a file, pick a strategy, set the geometry. Preview is
+0. **The banner** — which space answers every question, stated permanently.
+   Once the answering space is a setting, "which cut am I talking to" stops
+   being obvious, and a screen that mentioned it only when something was wrong
+   would teach nobody where their answers come from.
+1. **The bench** — pick a file (or the whole bucket), pick a strategy, set the
+   geometry. Preview is
    labelled free because it is; Index all four is the primary action because
    comparing is the point.
 2. **The preview** — the summary line, a bar per chunk (which is where a cut's
@@ -395,7 +432,10 @@ One tab, in the order the work happens.
    is the existing run.
 4. **The variants** — what exists right now, read back from the index rather
    than from a table, so it is correct after a restart and cannot claim a
-   namespace somebody deleted from the console.
+   namespace somebody deleted from the console. **Answer from this** adopts one
+   as production; the adopted one cannot be deleted until production is pointed
+   elsewhere, because a delete that left the app with nothing to answer from is
+   not a decision anybody made.
 5. **The scoreboard** — the ranking, then a grid of one row per question and one
    column per variant. Clicking a cell shows what that variant retrieved against
    what it should have, which is where a number becomes a fixable problem.
@@ -431,12 +471,16 @@ The claims each file is there to defend:
 | `test_chunk_sections.py` | That a chunk maps back to its section under every strategy — including `structural`, whose injected heading breaks a naive lookup. |
 | `test_variant_scoring.py` | The two ways a scoreboard can lie: counting an unanswerable row as a miss, and letting a failed row read as a wrong answer. |
 | `test_chunking_api.py` | Which failures become which status code, and that a preview really writes nothing. |
+| `test_production_pointer.py` | That the pointer is followed, refuses a space that cannot answer, and survives a restart. |
+| `test_source_variants.py` | That every space holding a file is listed and judged on its own, and that the verdict follows the pointer. |
+| `test_missing_index.py` | That an index which does not exist reads as empty — and is never created by a read. |
+| `test_vector_store_concurrency.py` | That the Pinecone handle is never seen half-built, which is how a request reading two spaces at once used to crash. |
 
 **The live tier is opt-in**: `uv run pytest --live`. One test, doing the real
 round trip — preview, index a throwaway `320/40` variant, query it, delete it —
 because a fake cannot notice the day a vendor renames an argument. It asserts
-production's vector count is unchanged, and drops what it created however it
-ends.
+the space production answers from is unchanged, and drops what it created
+however it ends.
 
 One lesson is worth repeating, because it cost a real file: the fakes have to be
 at the **client** seam, not the function seam. Several services import vendor

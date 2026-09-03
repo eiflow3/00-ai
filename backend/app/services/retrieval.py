@@ -11,7 +11,7 @@ import asyncio
 from typing import Optional
 
 from app.schemas.retrieval import RetrievedChunk, RetrievalResult
-from app.services import chunk_variants
+from app.services import answer_space, chunk_variants
 from app.services.embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_MODEL_METADATA_KEY,
@@ -116,9 +116,10 @@ async def retrieve(
         score_threshold: Drop matches scoring below this value.
         embedding_model: Model used to embed the query.
         timeline: Where to report each step. Omitted when nobody is watching.
-        variant: Which chunking variant to search. Empty — the default — is the
-            production index. Naming one searches only that variant's vectors,
-            which is what makes two ways of cutting the same document
+        variant: Which chunking variant to search. Empty — the default — means
+            wherever production currently points, which is a stored setting
+            rather than a fixed index. Naming one searches only that variant's
+            vectors, which is what makes two ways of cutting the same document
             comparable: the question, the model and the prompt are held still,
             and the only thing that differs is where the chunks came from.
 
@@ -129,6 +130,12 @@ async def retrieve(
         UnknownVariant: If a variant is named that this app cannot run.
     """
     timeline = timeline or detached()
+
+    # A request that names no variant asks for "production", which is a pointer
+    # to whichever namespace was adopted rather than a fixed index — so it is
+    # read here, once, and the rest of this function knows only a space.
+    if not variant:
+        variant = await answer_space.current()
 
     # Resolved before anything is embedded, so a bad variant fails the request
     # rather than costing an embedding call first.

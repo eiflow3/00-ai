@@ -41,7 +41,7 @@ from app.config import settings
 from app.schemas.source import IndexedDocument, SourceChunk
 from app.services import cache, index_catalog
 from app.services.provenance import document_id_for
-from app.services.vector_store import index_stats
+from app.services.vector_store import VectorSpace, index_stats
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,12 @@ NAMESPACE = "sources:v2"
 EPOCH_KEY = f"{NAMESPACE}:epoch"
 
 # The cached listing: every indexed source key mapped to its index record.
+# Suffixed per vector space, since each namespace holds its own record of a file.
 DOCUMENTS_KEY = f"{NAMESPACE}:documents"
+
+# The cached per-space listing behind the Sources screen's chips: which spaces
+# hold a copy of each file, and what each copy looks like.
+COPIES_KEY = f"{NAMESPACE}:copies"
 
 # How long the generation counters live. Far longer than the entries they
 # guard: a counter that expired and reset to 1 could otherwise match a payload
@@ -67,14 +72,31 @@ COUNTER_TTL_SECONDS = 7 * 24 * 60 * 60
 UNKNOWN_VECTOR_COUNT = -1
 
 
-def _detail_key(source_key: str) -> str:
-    """Cache key for one file's chunks.
+def _space_suffix(space: Optional[VectorSpace]) -> str:
+    """Name a vector space in a way that is safe inside a cache key.
+
+    Every entry is scoped by it, because the same file has a different record
+    in every namespace that holds a copy — one cache key for all of them would
+    serve one variant's chunk counts as another's.
+    """
+    if space is None or (not space.index_name and not space.namespace):
+        return "production"
+    return f"{space.index_name}/{space.namespace}"
+
+
+def _documents_key(space: Optional[VectorSpace]) -> str:
+    """Cache key for one vector space's listing."""
+    return f"{DOCUMENTS_KEY}:{_space_suffix(space)}"
+
+
+def _detail_key(source_key: str, space: Optional[VectorSpace]) -> str:
+    """Cache key for one file's chunks in one vector space.
 
     Keyed by document id rather than the object key: object keys carry
     slashes, spaces and unicode, and the derived id is short, stable and safe
     in any cache backend.
     """
-    return f"{NAMESPACE}:detail:{document_id_for(source_key)}"
+    return f"{NAMESPACE}:detail:{_space_suffix(space)}:{document_id_for(source_key)}"
 
 
 def _version_key(source_key: str) -> str:
@@ -91,8 +113,8 @@ async def _counter(key: str) -> int:
         return 0
 
 
-async def _vector_count() -> int:
-    """How many vectors the index currently holds.
+async def _vector_count(index_name: str = "") -> int:
+    """How many vectors an index currently holds.
 
     The cheap question that stands in for the expensive one. Walking every
     vector id is what a listing costs; asking the index for its own total is a
@@ -100,12 +122,15 @@ async def _vector_count() -> int:
     removed since the cached listing was built — including by someone working
     directly in the Pinecone console.
 
+    Args:
+        index_name: Which index to probe. Empty means the production one.
+
     Returns:
         The index's total vector count, or `UNKNOWN_VECTOR_COUNT` when the
         index cannot report one, which falls back to the TTL.
     """
     try:
-        stats = await asyncio.to_thread(index_stats)
+        stats = await asyncio.to_thread(index_stats, index_name)
     except Exception as exc:
         # A probe that fails must not fail the request it was checking, and
         # must not force a rebuild either — the expensive read it guards would
@@ -137,30 +162,38 @@ async def _write(key: str, payload: dict[str, Any]) -> None:
     await cache.set(key, json.dumps(payload), settings.cache_ttl_seconds)
 
 
-async def load_documents(refresh: bool = False) -> dict[str, IndexedDocument]:
-    """Return the index's record of every file it holds vectors for.
+async def load_documents(
+    space: Optional[VectorSpace] = None, refresh: bool = False
+) -> dict[str, IndexedDocument]:
+    """Return one vector space's record of every file it holds vectors for.
 
     The expensive read behind `GET /sources`, and the one this module exists
     for. A hit costs one call to the index for its vector count; a miss costs
     the full walk.
 
     Args:
+        space: Which index and namespace to describe. Defaults to production.
         refresh: Skip the cached entry and rebuild from the index.
 
     Returns:
-        Each indexed source key mapped to the index's record of it.
+        Each indexed source key mapped to that space's record of it.
     """
     if not settings.cache_enabled:
-        return await index_catalog.list_indexed_documents()
+        return await index_catalog.list_indexed_documents(space)
+
+    index_name = space.index_name if space else ""
 
     # Both are needed either way — to validate a hit, or to stamp a rebuild —
     # and neither depends on the other, so they go together.
-    epoch, count = await asyncio.gather(_counter(EPOCH_KEY), _vector_count())
+    epoch, count = await asyncio.gather(
+        _counter(EPOCH_KEY), _vector_count(index_name)
+    )
 
+    key = _documents_key(space)
     reason = "refresh requested" if refresh else None
 
     if reason is None:
-        payload = await _read(DOCUMENTS_KEY)
+        payload = await _read(key)
         reason = _listing_miss_reason(payload, epoch, count)
 
         if reason is None:
@@ -169,22 +202,24 @@ async def load_documents(refresh: bool = False) -> dict[str, IndexedDocument]:
                 for source_key, document in payload["documents"].items()
             }
             logger.info(
-                "sources listing: cache hit (%s), %d indexed document(s)",
+                "sources listing %s: cache hit (%s), %d indexed document(s)",
+                _space_suffix(space),
                 cache.backend_name(),
                 len(documents),
             )
             return documents
 
     started = time.perf_counter()
-    documents = await index_catalog.list_indexed_documents()
+    documents = await index_catalog.list_indexed_documents(space)
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     # The reason is the useful half. A miss on "invalidated by a write" is this
     # application working as intended; a miss on a moved vector count means
     # something changed the index from outside it.
     logger.info(
-        "sources listing: cache miss (%s) — %s; walked the index for %d "
+        "sources listing %s: cache miss (%s) — %s; walked the index for %d "
         "document(s) in %.0f ms",
+        _space_suffix(space),
         cache.backend_name(),
         reason,
         len(documents),
@@ -192,7 +227,7 @@ async def load_documents(refresh: bool = False) -> dict[str, IndexedDocument]:
     )
 
     await _write(
-        DOCUMENTS_KEY,
+        key,
         {
             "epoch": epoch,
             "vector_count": count,
@@ -207,6 +242,150 @@ async def load_documents(refresh: bool = False) -> dict[str, IndexedDocument]:
     )
 
     return documents
+
+
+async def load_copies(
+    refresh: bool = False,
+) -> dict[str, dict[str, IndexedDocument]]:
+    """Return every vector space that holds files, and what each one holds.
+
+    What the Sources screen's per-file chips are built from: a file can be cut
+    four ways at once, and "where does this file live" has one answer per
+    namespace holding a copy.
+
+    Cached as a whole rather than per space. The walk is the same shape as the
+    single-space listing — one id listing and one batched fetch per namespace —
+    but there is one of them per variant, and doing that on every page load
+    would undo the reason this module exists.
+
+    Args:
+        refresh: Skip the cached entry and rebuild from the indexes.
+
+    Returns:
+        Each variant id mapped to what it holds, keyed by source key. The
+        original production index appears under the empty variant id, and a
+        space holding nothing is left out entirely.
+    """
+    if not settings.cache_enabled:
+        return await _read_copies()
+
+    epoch, production, lab = await asyncio.gather(
+        _counter(EPOCH_KEY),
+        _vector_count(),
+        _vector_count(settings.pinecone_lab_index_name),
+    )
+
+    reason = "refresh requested" if refresh else None
+
+    if reason is None:
+        payload = await _read(COPIES_KEY)
+        reason = _copies_miss_reason(payload, epoch, production, lab)
+
+        if reason is None:
+            copies = {
+                variant: {
+                    source_key: IndexedDocument.model_validate(document)
+                    for source_key, document in held.items()
+                }
+                for variant, held in payload["copies"].items()
+            }
+            logger.info(
+                "sources copies: cache hit (%s), %d space(s)",
+                cache.backend_name(),
+                len(copies),
+            )
+            return copies
+
+    started = time.perf_counter()
+    copies = await _read_copies()
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    logger.info(
+        "sources copies: cache miss (%s) — %s; walked %d space(s) in %.0f ms",
+        cache.backend_name(),
+        reason,
+        len(copies),
+        elapsed_ms,
+    )
+
+    await _write(
+        COPIES_KEY,
+        {
+            "epoch": epoch,
+            "production_count": production,
+            "lab_count": lab,
+            "embedding_model": settings.embedding_model,
+            "copies": {
+                variant: {
+                    source_key: document.model_dump(mode="json")
+                    for source_key, document in held.items()
+                }
+                for variant, held in copies.items()
+            },
+        },
+    )
+
+    return copies
+
+
+async def _read_copies() -> dict[str, dict[str, IndexedDocument]]:
+    """Walk every space that could hold a copy, uncached.
+
+    Imported here rather than at module scope: the variant rules are built on
+    the index catalog this module also uses, and importing them at the top
+    would tie the cache's import order to theirs for no benefit.
+    """
+    from app.services import chunk_variants
+
+    production, by_variant = await asyncio.gather(
+        index_catalog.list_indexed_documents(),
+        chunk_variants.documents_by_variant(),
+    )
+
+    copies: dict[str, dict[str, IndexedDocument]] = dict(by_variant)
+
+    # The original index is one space among the rest here, and reads as one on
+    # screen — but it has no variant record, so it is added by name.
+    if production:
+        copies[chunk_variants.PRODUCTION_VARIANT] = production
+
+    return copies
+
+
+def _copies_miss_reason(
+    payload: Optional[dict[str, Any]], epoch: int, production: int, lab: int
+) -> Optional[str]:
+    """Say why a cached per-space listing cannot be used, or None when it can.
+
+    Two vector counts rather than one: a variant indexed in the lab moves the
+    lab's total and leaves production's alone, and an entry validated on
+    production's count would miss it entirely.
+    """
+    if payload is None:
+        return "nothing cached"
+
+    if not isinstance(payload.get("copies"), dict):
+        return "cached entry unreadable"
+
+    if payload.get("epoch") != epoch:
+        return "invalidated by a write"
+
+    if payload.get("production_count") != production:
+        return (
+            f"production vector count moved, {payload.get('production_count')} "
+            f"-> {production}"
+        )
+
+    if payload.get("lab_count") != lab:
+        return f"lab vector count moved, {payload.get('lab_count')} -> {lab}"
+
+    if payload.get("embedding_model") != settings.embedding_model:
+        return (
+            f"embedding model changed, {payload.get('embedding_model')!r} -> "
+            f"{settings.embedding_model!r}"
+        )
+
+    return None
 
 
 def _listing_miss_reason(
@@ -248,7 +427,9 @@ def _listing_miss_reason(
 
 
 async def load_detail(
-    source_key: str, refresh: bool = False
+    source_key: str,
+    space: Optional[VectorSpace] = None,
+    refresh: bool = False,
 ) -> tuple[Optional[IndexedDocument], list[SourceChunk]]:
     """Return one file's index record together with every chunk of it.
 
@@ -260,23 +441,24 @@ async def load_detail(
 
     Args:
         source_key: The object key within the bucket.
+        space: Which index and namespace to read. Defaults to production.
         refresh: Skip the cached entry and re-read from the index.
 
     Returns:
-        The index's record of the file and its chunks in document order, or
+        The space's record of the file and its chunks in document order, or
         `(None, [])` when nothing is indexed for it.
     """
-    ids = await index_catalog.list_vector_ids_for(source_key)
+    ids = await index_catalog.list_vector_ids_for(source_key, space)
 
     if not settings.cache_enabled:
-        return await index_catalog.read_document(source_key, ids)
+        return await index_catalog.read_document(source_key, ids, space)
 
     if not ids:
         # Nothing indexed is not worth an entry, and caching it would make an
         # index that lags a write report the file as empty for a whole TTL.
         return None, []
 
-    key = _detail_key(source_key)
+    key = _detail_key(source_key, space)
     version = await _counter(_version_key(source_key))
 
     reason = "refresh requested" if refresh else None
@@ -298,7 +480,7 @@ async def load_detail(
             return IndexedDocument.model_validate(payload["document"]), chunks
 
     started = time.perf_counter()
-    document, chunks = await index_catalog.read_document(source_key, ids)
+    document, chunks = await index_catalog.read_document(source_key, ids, space)
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     logger.info(

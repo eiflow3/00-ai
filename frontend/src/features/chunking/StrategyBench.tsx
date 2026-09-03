@@ -9,10 +9,23 @@
  * "Index all four" is the primary action because comparing is the whole point.
  * One click queues the same file under every strategy, and the run embeds each
  * of them on its own terms.
+ *
+ * The file picker also offers the whole bucket. Indexing used to start from the
+ * Sources screen, which is where a "everything that needs it" sweep belonged;
+ * moving indexing here would have quietly cost that, so it moved too. Preview
+ * still needs one file, because a preview is a document being cut.
  */
 
 import type { ChunkStrategySpec, ChunkStrategy, SourceStatus } from '../../api/types'
 import { Spinner } from '../../components/Spinner'
+
+/**
+ * The picker value standing for "every readable file in the bucket".
+ *
+ * A sentinel rather than an empty selection, because "all of them" and "none
+ * chosen yet" lead to opposite buttons being enabled.
+ */
+export const ALL_FILES = '*'
 
 interface StrategyBenchProps {
   sources: SourceStatus[]
@@ -59,7 +72,12 @@ export function StrategyBench({
 
   // The overlap has to leave room to advance, or the splitter could not move.
   const geometryValid = chunkOverlap < chunkSize
-  const ready = sourceKey !== '' && strategy !== null && geometryValid
+  const everything = sourceKey === ALL_FILES
+  const chosenSomething = sourceKey !== ''
+  // A preview cuts one document and shows the chunks, so the whole bucket is
+  // not a thing it can answer for.
+  const canPreview = chosenSomething && !everything && strategy !== null && geometryValid
+  const canIndex = chosenSomething && strategy !== null && geometryValid
 
   return (
     <section className="mb-6 rounded-lg border border-slate-200 bg-white px-4 py-4">
@@ -71,6 +89,9 @@ export function StrategyBench({
           className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
         >
           <option value="">Choose a file…</option>
+          <option value={ALL_FILES}>
+            Every readable file ({readable.length})
+          </option>
           {readable.map((source) => (
             <option key={source.source_key} value={source.source_key}>
               {source.source_key}
@@ -153,7 +174,9 @@ export function StrategyBench({
               <span className="font-mono text-slate-700">
                 {strategy}-{chunkSize}-{chunkOverlap}
               </span>
-              , kept apart from the index your answers come from.
+              {everything
+                ? ', holding every readable file in the bucket.'
+                : ', kept apart from the space your answers come from.'}
             </>
           ) : (
             'Pick a file and a strategy.'
@@ -164,7 +187,10 @@ export function StrategyBench({
           <button
             type="button"
             onClick={onPreview}
-            disabled={!ready || previewing}
+            disabled={!canPreview || previewing}
+            title={
+              everything ? 'A preview cuts one document. Pick a single file.' : undefined
+            }
             className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
           >
             {previewing ? <Spinner /> : null} Preview — free
@@ -172,7 +198,7 @@ export function StrategyBench({
           <button
             type="button"
             onClick={onIndex}
-            disabled={!ready || indexing}
+            disabled={!canIndex || indexing}
             className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40"
           >
             Index this one
@@ -180,7 +206,7 @@ export function StrategyBench({
           <button
             type="button"
             onClick={onIndexAll}
-            disabled={sourceKey === '' || !geometryValid || indexing}
+            disabled={!chosenSomething || !geometryValid || indexing}
             className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-30"
           >
             Index all {strategies.length}

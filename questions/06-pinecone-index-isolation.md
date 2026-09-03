@@ -14,7 +14,7 @@ A Pinecone **Index** is an isolated vector space, and a **Namespace** is a parti
 - When you set `pinecone_index_name = "rag-index"`, all upserts and queries are scoped to that specific vector space.
 - Nothing from another index can leak in or be queried.
 - A query names **one** namespace and sees only that one. There is no "search every namespace" call.
-- A query that names no namespace searches the **default** namespace (the empty-named one) — not everything. That is what production is: `rag-index`, namespace `""`.
+- A query that names no namespace searches the **default** namespace (the empty-named one) — not everything. That is what this project's original production space was: `rag-index`, namespace `""`.
 - A namespace is created by writing to it and ceases to exist once it is empty, so there is nothing to provision and nothing to clean up.
 - **The same vector id can exist in every namespace.** `08723ac058830853#00003` lives in all four of this project's chunking namespaces and holds different text in each — an id names a *slot*, and only the namespace distinguishes them.
 
@@ -43,14 +43,19 @@ Two disciplines follow from metadata being schemaless rather than declared:
 
 ## What this project does with it
 
-| Index | Holds |
-|---|---|
-| `rag-index` | Production. The default namespace, and what `/chat` answers from. |
-| `rag-chunk-lab` | One namespace per chunking variant — `boundary-512-64`, `structural-512-64`, and so on. |
+One index, `rag-chunk-lab`, with one namespace per chunking variant — `boundary-512-64`, `recursive-512-64`, `structural-512-64`, and so on.
 
 Namespaces rather than an index per chunking strategy, because five indexes is a hard ceiling at four strategies plus production, and chunk size and overlap are variables worth sweeping alongside the strategy. Full reasoning in [docs/chunking-strategies.md](../docs/chunking-strategies.md) §3.
 
-Production keeps an index of its own even though a namespace would isolate it just as well. That is about blast radius, not isolation: a lab bug cannot write into an index it never opens, so "the app answers from `rag-index`" stays a one-line claim rather than a claim about every query being scoped correctly.
+### Production stopped being an index
+
+There used to be a second index, `rag-index`, holding what `/chat` answered from. Keeping it separate was about blast radius rather than isolation: a lab bug cannot write into an index it never opens.
+
+It has been retired, because it made the wrong thing expensive. Deciding that one way of cutting the documents retrieves better should be a decision you can act on, and while production was a *place*, acting on it meant re-embedding the corpus into that place. Production is now a **pointer**: a stored variant id naming which namespace answers by default, moved in one call, reversible, with nothing copied.
+
+The blast-radius guarantee is replaced by a narrower one: **a write must name its target.** `space_for` refuses an id it cannot parse rather than creating a namespace for it, and every read uses a handle that cannot provision — so asking about an index that no longer exists comes back empty rather than bringing it back.
+
+That is also the honest trade. An index boundary is a stronger guarantee than a discipline, and this project gave one up for the other on purpose.
 
 ---
 

@@ -321,10 +321,13 @@ async def _resolve_keys(request: IndexRequest) -> tuple[list[str], list[str]]:
         missing = [key for key, source in zip(request.keys, found) if source is None]
         return keys, missing
 
-    # Otherwise let the storage-versus-index comparison pick the work.
+    # Otherwise let the storage-versus-index comparison pick the work — against
+    # the space this run writes to, so a sweep aimed at one variant is not told
+    # a file is current on the strength of a different variant's copy.
     statuses = await sync_status.list_reindexable(
         prefix=request.prefix,
         only_stale=request.only_stale and not request.force,
+        variant=request.variant,
     )
     return [status.source_key for status in statuses if status.source], []
 

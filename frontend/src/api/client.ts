@@ -39,6 +39,7 @@ import type {
   ModelOption,
   Prompt,
   PromptPreview,
+  ProductionSpace,
   PromptPreviewRequest,
   ScoreEnqueueResponse,
   ScoreEvent,
@@ -664,6 +665,30 @@ export function previewChunking(
  */
 export function listVariants(signal?: AbortSignal): Promise<ChunkVariant[]> {
   return request<ChunkVariant[]>(url('/chunking/variants'), { signal })
+}
+
+/**
+ * Report which vector space the app answers from.
+ *
+ * Production is a pointer, not a place — this reads where it currently points
+ * and whether that space can still answer.
+ */
+export function getProduction(signal?: AbortSignal): Promise<ProductionSpace> {
+  return request<ProductionSpace>(url('/chunking/production'), { signal })
+}
+
+/**
+ * Adopt one variant as the space every ungrounded question reads.
+ *
+ * Instant and reversible: the vectors already exist, so nothing is re-embedded.
+ * Refused when the space is empty or holds an incomplete copy of a file.
+ */
+export function setProduction(variantId: string): Promise<ProductionSpace> {
+  return request<ProductionSpace>(url('/chunking/production'), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ variant_id: variantId }),
+  })
 }
 
 /** Drop a variant and every vector in it. The source files are untouched. */
