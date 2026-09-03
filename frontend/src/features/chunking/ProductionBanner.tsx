@@ -10,6 +10,11 @@
  * space is a setting, "which cut am I actually talking to" stops being obvious,
  * and a screen that only mentions it when something is wrong teaches nobody
  * where their answers come from.
+ *
+ * Moving it is not done here — that is a button on the variant you want, in the
+ * table below, because choosing between variants means reading their rows. What
+ * this offers is only the way *back*, and only while the original index still
+ * holds something to go back to.
  */
 
 import type { ProductionSpace } from '../../api/types'
@@ -51,6 +56,10 @@ export function ProductionBanner({
   // falls back on its own, so questions asked now come back ungrounded.
   const missing = production.state === 'missing'
   const original = production.variant_id === ''
+  // The original index can be retired once production points at a variant.
+  // Offering a way back to an index that no longer exists would be offering an
+  // action the server can only refuse.
+  const canRevert = !original && production.original_vector_count > 0
 
   return (
     <section
@@ -82,14 +91,20 @@ export function ProductionBanner({
         )}
       </div>
 
-      {original ? null : (
+      {canRevert ? (
         <button
           type="button"
           onClick={onReset}
+          title={`The original index still holds ${production.original_vector_count} chunk(s).`}
           className="shrink-0 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
         >
           Back to the original index
         </button>
+      ) : (
+        <p className="shrink-0 text-xs text-slate-400">
+          Change it with <span className="font-medium">Answer from this</span> on
+          a variant below.
+        </p>
       )}
     </section>
   )

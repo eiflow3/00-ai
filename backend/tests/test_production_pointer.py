@@ -234,6 +234,28 @@ async def test_the_pointer_names_the_files_it_can_answer_about(
     assert body["label"] == "recursive · 512/64"
 
 
+async def test_going_back_is_only_offered_while_there_is_somewhere_to_go(
+    client, report_key, index_variant
+):
+    """The original index can be retired, and then reverting cannot work.
+
+    The screen builds its "back to the original index" button off this count,
+    so a zero here is what stops it offering an action that would be refused.
+    """
+    await index_variant(report_key, "recursive-512-64")
+    await client.put("/chunking/production", json={"variant_id": "recursive-512-64"})
+
+    assert (await client.get("/chunking/production")).json()["original_vector_count"] == 0
+
+    # And once the original index does hold something, it is offered again.
+    await index_variant(report_key)
+
+    body = (await client.get("/chunking/production")).json()
+
+    assert body["variant_id"] == "recursive-512-64"
+    assert body["original_vector_count"] > 0
+
+
 async def _chunks_in(source_key: str, variant: str):
     """The chunks one variant holds for a file."""
     from app.services import index_catalog

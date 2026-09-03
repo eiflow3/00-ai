@@ -1054,6 +1054,13 @@ export interface ProductionSpace {
   vector_count: number
   source_keys: string[]
   updated_at: string | null
+  /**
+   * What the original production index still holds.
+   *
+   * Zero means it has been retired, and there is nowhere to go back to — which
+   * is what decides whether "back to the original index" is offered at all.
+   */
+  original_vector_count: number
 }
 
 // --- Chunking: scoring one variant against a golden set ---------------------

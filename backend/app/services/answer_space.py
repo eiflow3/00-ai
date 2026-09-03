@@ -41,6 +41,7 @@ from app.config import settings
 from app.schemas.chunking import ProductionSpace, VariantState
 from app.services import chunk_variants
 from app.services.chunk_variants import PRODUCTION_VARIANT, UnknownVariant
+from app.services.vector_store import index_stats
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,9 @@ async def describe() -> ProductionSpace:
     if variant == PRODUCTION_VARIANT:
         return await _describe_original(updated_at)
 
-    described = await chunk_variants.describe(variant)
+    described, original = await asyncio.gather(
+        chunk_variants.describe(variant), _original_vector_count()
+    )
 
     if described is None:
         # Pointed at a namespace that has since been emptied. Reported as it
@@ -173,6 +176,7 @@ async def describe() -> ProductionSpace:
             label=chunk_variants.label_for(chunk_variants.parse(variant)),
             state=VariantState.MISSING,
             updated_at=updated_at,
+            original_vector_count=original,
         )
 
     return ProductionSpace(
@@ -182,6 +186,7 @@ async def describe() -> ProductionSpace:
         vector_count=described.vector_count,
         source_keys=described.source_keys,
         updated_at=updated_at,
+        original_vector_count=original,
     )
 
 
@@ -190,15 +195,28 @@ async def _describe_original(updated_at: Optional[datetime]) -> ProductionSpace:
     from app.services import index_catalog
 
     documents = await index_catalog.list_indexed_documents()
+    vectors = sum(document.chunk_count for document in documents.values())
 
     return ProductionSpace(
         variant_id=PRODUCTION_VARIANT,
         label=PRODUCTION_LABEL,
         state=VariantState.READY if documents else VariantState.MISSING,
-        vector_count=sum(document.chunk_count for document in documents.values()),
+        vector_count=vectors,
         source_keys=sorted(documents),
         updated_at=updated_at,
+        original_vector_count=vectors,
     )
+
+
+async def _original_vector_count() -> int:
+    """How much the original production index still holds, if it exists.
+
+    Read from the index's own statistics rather than by walking it: this only
+    decides whether going back is offered at all, and it sits on an endpoint a
+    screen re-reads, so it must not cost a full listing.
+    """
+    stats = await asyncio.to_thread(index_stats, settings.pinecone_index_name)
+    return int(stats.get("total_vector_count") or 0)
 
 
 async def point_at(variant: str) -> ProductionSpace:

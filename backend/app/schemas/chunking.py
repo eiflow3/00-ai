@@ -286,6 +286,14 @@ class ProductionSpace(BaseModel):
         default=None, description="When production was last pointed somewhere"
     )
 
+    # Whether there is anything to go back to. The original index can be
+    # retired once production points at a variant, and a client that offered
+    # "back to the original index" regardless would be offering an action that
+    # can only fail.
+    original_vector_count: int = Field(
+        default=0, ge=0, description="Vectors the original production index still holds"
+    )
+
 
 class ProductionSpaceRequest(BaseModel):
     """Ask that production answer from a different space."""
