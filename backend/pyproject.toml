@@ -38,7 +38,9 @@ testpaths = ["tests"]
 # path for `import app` to resolve from a bare `pytest`.
 pythonpath = ["."]
 # Quiet by default: a smoke suite is read when it fails, not when it passes.
-addopts = "-q"
+# Collection errors do not interrupt the run: the governance tests were written
+# before their module (TDD), and their ImportError must not silence the rest.
+addopts = "-q --continue-on-collection-errors"
 markers = [
     "live: hits the real Pinecone, OpenAI and R2. Skipped unless --live is passed.",
 ]
